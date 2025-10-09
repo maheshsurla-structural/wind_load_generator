@@ -1,0 +1,16 @@
+[project]
+name = "wind-load-generator"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "midas-civil>=1.1.0",
+    "pandas>=2.3.3",
+    "pyside6>=6.9.3",
+    "scikit-learn>=1.7.2",
+]
+
+[tool.setuptools]
+packages = ["core", "midas", "gui","wind_database"]
+
