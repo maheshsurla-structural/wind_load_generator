@@ -1,6 +1,6 @@
 from midas import get_elements, get_nodes, get_distance_unit, get_query_element
 from sklearn.cluster import DBSCAN
-from .convert_distance_from_ft import convert_distance_from_ft
+from utils import convert_distance_from_ft
 import numpy as np
 
 def cluster_vertical_elements(piers, elements=None, nodes=None):

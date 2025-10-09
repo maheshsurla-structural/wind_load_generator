@@ -1,7 +1,6 @@
 from PySide6.QtWidgets import QApplication
 import sys
 from gui import MainWindow
-# from core.analytical_model_classification import AnalyticalModelClassification
 import json
 
 from midas.midas_api import MidasAPI
