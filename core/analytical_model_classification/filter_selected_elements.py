@@ -1,3 +1,5 @@
+# core/analytical_model_classification/filter_selected_elements.py
+
 def filter_selected_elements(elements_in_model, selected_elements):
     """Filter elements in the model based on user selection."""
     selected_str_ids = set(map(str, selected_elements))  # Convert to string for matching

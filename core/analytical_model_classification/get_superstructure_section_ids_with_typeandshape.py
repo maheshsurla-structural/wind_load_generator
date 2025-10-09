@@ -1,3 +1,5 @@
+# core/analytical_model_classification/get_superstructure_section_ids_with_typeandshape.py
+
 from midas import get_section_properties
 
 def get_superstructure_section_ids_with_typeandshape():

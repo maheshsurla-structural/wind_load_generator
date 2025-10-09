@@ -1,3 +1,5 @@
+#core/analytical_model_classification/calculate_deck_reference_height.py
+
 def calculate_deck_reference_height(deck_elements, node_data):
     node_data = node_data.get("NODE", {}) if "NODE" in node_data else node_data
     deck_node_ids = {node for elem in deck_elements.values() for node in elem["NODE"] if node > 0}
