@@ -1,17 +1,18 @@
-# control_data.py
+# gui/control_data.py
+
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog, QWidget, QListWidget, QStackedWidget, QSplitter,
     QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QDoubleSpinBox,
-    QComboBox, QPushButton, QLineEdit, QGroupBox, QGridLayout, QSpinBox
+    QComboBox, QPushButton, QLineEdit, QGroupBox, QSpinBox
 )
 
-from PySide6.QtGui import QIntValidator, QDoubleValidator, QAction
+from PySide6.QtGui import QDoubleValidator
 
-# IMPORTANT: this imports your mixin from your unit_system.py
-from gui.unit_system import UnitAwareMixin
+from gui.unit_system import UnitAwareMixin, UnitSystem
+
 
 
 class ControlData(QDialog, UnitAwareMixin):
@@ -24,12 +25,15 @@ class ControlData(QDialog, UnitAwareMixin):
     """
     controlDataChanged = Signal(dict)
 
-    def __init__(self, parent=None):
 
+    def __init__(self, parent=None, *, units: UnitSystem | None = None):
         super().__init__(parent)
         self.setWindowTitle("Control Data")
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)  # single-instance friendly
-        self.resize(400, 400)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.resize(500, 460)
+
+        # Keep a handle to the global UnitSystem (prefer explicit over implicit)
+        self.units: UnitSystem | None = units or getattr(parent, "units", None)
 
         # --- Left sections ---
         self.section_list = QListWidget()
@@ -80,12 +84,14 @@ class ControlData(QDialog, UnitAwareMixin):
         root.addWidget(splitter)
         root.addLayout(bottom)
 
+
         # wiring
         self.section_list.currentRowChanged.connect(self.pages.setCurrentIndex)
         self.section_list.setCurrentRow(0)
 
         # 🔗 make this dialog unit-aware (labels will sync immediately + on changes)
-        self.bind_units()
+        # EXPLICIT: pass the UnitSystem we received
+        self.bind_units(self.units)
 
     # ---------------------------------------------------------------------
     # Pages
@@ -176,11 +182,19 @@ class ControlData(QDialog, UnitAwareMixin):
         form.setHorizontalSpacing(14)
         form.setVerticalSpacing(10)
 
-        self.gust_factor = QDoubleSpinBox(decimals=2, minimum=0.5, maximum=3.0, singleStep=0.05)
+        self.gust_factor = QDoubleSpinBox()
+        self.gust_factor.setDecimals(2)
+        self.gust_factor.setRange(0.50, 3.00)
+        self.gust_factor.setSingleStep(0.05)
+
         self.gust_factor.setValue(1.00)
         form.addRow("Gust Factor", self.gust_factor)
 
-        self.drag_coeff = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=5.0, singleStep=0.05)
+        self.drag_coeff = QDoubleSpinBox()
+        self.drag_coeff.setDecimals(2)
+        self.drag_coeff.setRange(0.10, 5.00)
+        self.drag_coeff.setSingleStep(0.05)
+        
         self.drag_coeff.setValue(1.20)
         form.addRow("Drag Coefficient", self.drag_coeff)
 
@@ -221,26 +235,36 @@ class ControlData(QDialog, UnitAwareMixin):
 
         return w
 
-    # ---------------------------------------------------------------------
-    # Helpers
-    # ---------------------------------------------------------------------
-    def _row(self, label_text: str, editor: QWidget, unit_label: QLabel) -> tuple[QLabel, QWidget]:
-        """
-        Returns a (label, widget) pair suitable for QFormLayout.addRow(...)
-        The widget is a small horizontal layout: editor | unit_label
-        """
-        lab = QLabel(label_text)
-        row = QWidget()
-        h = QHBoxLayout(row)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(8)
-        h.addWidget(editor, 1)
-        h.addWidget(unit_label)
-        return lab, row
 
     # ---------------------------------------------------------------------
-    # Actions
+    # Prefill + Collect
     # ---------------------------------------------------------------------
+    def set_payload(self, payload: dict) -> None:
+        """
+        Prefill editors from a payload.
+        Call this from MainWindow before exec().
+        """
+        s = payload.get("structural", {})
+        n = payload.get("naming", {})
+        l = payload.get("loads", {})
+
+        # structural
+        self.ground_level.setText(str(s.get("reference_height", "0.0")))
+        self.pier_proximity_radius.setText(str(s.get("pier_radius", "10.0")))
+
+        # naming
+        self.deck_name.setText(n.get("deck_name", "Deck"))
+        self.pier_base_name.setText(n.get("pier_base_name", "Pier"))
+        self.starting_index.setValue(int(n.get("starting_index", 1)))
+        self.suffix_above.setText(n.get("suffix_above", "_SubAbove"))
+        self.suffix_below.setText(n.get("suffix_below", "_SubBelow"))
+
+        # loads
+        try: self.gust_factor.setValue(float(l.get("gust_factor", 1.00)))
+        except Exception: pass
+        try: self.drag_coeff.setValue(float(l.get("drag_coefficient", 1.20)))
+        except Exception: pass
+
     def collect_payload(self) -> dict:
         return {
             "structural": {
@@ -259,13 +283,15 @@ class ControlData(QDialog, UnitAwareMixin):
                 "drag_coefficient": float(self.drag_coeff.value()),
             },
             "units": {
-                "length": self.length_unit_labels[0].text() if self.length_unit_labels else "",
-                "force": self.force_unit_labels[0].text() if self.force_unit_labels else "",
+                # use the live UnitSystem if available; fallback to current labels
+                "length": (self.units.length if self.units else (self.length_unit_labels[0].text() if self.length_unit_labels else "")),
+                "force":  (self.units.force  if self.units  else (self.force_unit_labels[0].text()  if self.force_unit_labels  else "")),
             },
         }
 
-
-
+    # ---------------------------------------------------------------------
+    # Validation / Apply
+    # ---------------------------------------------------------------------
     def validate(self) -> tuple[bool, str]:
         try:
             gl = float(self.ground_level.text())
@@ -278,9 +304,6 @@ class ControlData(QDialog, UnitAwareMixin):
         if pr < 0:
             return False, "Pier Proximity Radius must be ≥ 0."
 
-        if not (0.5 <= self.gust_factor.value() <= 3.0):
-            return False, "Gust Factor must be between 0.5 and 3.0."
-
         if not self.deck_name.text().strip():
             return False, "Deck Name cannot be empty."
         if not self.pier_base_name.text().strip():
@@ -288,44 +311,44 @@ class ControlData(QDialog, UnitAwareMixin):
 
         return True, ""
 
-
     def apply_changes(self):
         ok, msg = self.validate()
         if not ok:
-            # Replace with a nicer banner/dialog as you prefer
             print("Validation error:", msg)
             return
         payload = self.collect_payload()
-        # TODO: Persist to your project/session store if needed
-        self.controlDataChanged.emit(payload)
-
+        self.controlDataChanged.emit(payload)  # MainWindow should connect a slot to save this
 
     def restore_defaults(self):
         self.ground_level.setText("0.0")
         self.pier_proximity_radius.setText("10.0")
         self.gust_factor.setValue(1.00)
         self.drag_coeff.setValue(1.20)
-
-        # naming
         self.deck_name.setText("Deck")
         self.pier_base_name.setText("Pier")
         self.starting_index.setValue(1)
         self.suffix_above.setText("_SubAbove")
         self.suffix_below.setText("_SubBelow")
 
-
     # ---------------------------------------------------------------------
-    # UnitAwareMixin override (optional)
+    # UnitAwareMixin override (keeps summary labels in sync)
     # ---------------------------------------------------------------------
-    def update_units(self, force_unit: str, length_unit: str) -> None:
-        """
-        Called by UnitAwareMixin when MainWindow units change.
-        Default behavior (super) updates label *texts*. Keep that, then
-        optionally adjust any read-only mirrors.
-        """
-        super().update_units(force_unit, length_unit)
-        # keep summary page mirrors consistent (already handled via lists, but harmless)
+    def update_units(self, length_unit: str, force_unit: str) -> None:
+        super().update_units(length_unit, force_unit)  # updates registered label lists
         if hasattr(self, "lbl_active_length"):
             self.lbl_active_length.setText(length_unit)
         if hasattr(self, "lbl_active_force"):
             self.lbl_active_force.setText(force_unit)
+
+    # ---------------------------------------------------------------------
+    # Helpers
+    # ---------------------------------------------------------------------
+    def _row(self, label_text: str, editor: QWidget, unit_label: QLabel) -> tuple[QLabel, QWidget]:
+        lab = QLabel(label_text)
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(8)
+        h.addWidget(editor, 1)
+        h.addWidget(unit_label)
+        return lab, row
