@@ -1,545 +1,195 @@
 # gui/main_window.py
+from __future__ import annotations
 
-from PySide6.QtWidgets import (QMainWindow, QToolBar, QStatusBar, QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QPushButton
-                               , QLineEdit, QFormLayout, QLabel, QComboBox, QTableWidget, QSizePolicy, QHeaderView, QTableWidgetItem, 
-                               QAbstractItemView)
+from PySide6.QtWidgets import (
+    QMainWindow, QToolBar, QStatusBar, QWidget, QVBoxLayout,
+    QHBoxLayout, QGroupBox, QPushButton, QComboBox, QLabel
+)
+from PySide6.QtGui import QAction
 
-from PySide6.QtGui import QIntValidator, QDoubleValidator, QAction
+from core.unit_manager import get_unit_manager
+from core.app_bus import get_app_bus
+from core.worker import Worker
+from core.thread_pool import run_in_thread
+from services.persistence import ConfigManager
+from wind_database import wind_db
 
-from PySide6.QtCore import Qt
+from gui.widgets.wind_parameters import WindParametersPanel
+from gui.widgets.pressure_table import PressureTable
+from gui.dialogs.control_data import ControlData
+from gui.dialogs.wind_load_input import WindLoadInput
+from gui.dialogs.pair_wind_load_cases import PairWindLoadCases
 
-from gui.wind_load_input import WindLoadInput
-
-from gui.pair_wind_load_cases import PairWindLoadCases
-
-from wind_database import wind_db, LOAD_CASES
-
-from gui.control_data import ControlData
-
-from gui.unit_system import UnitSystem
-
-# --- persistence (optional but you call _save_control_data, so include it) ---
-import json, os
-from pathlib import Path
 
 class MainWindow(QMainWindow):
-    
-    def __init__(self):
+    """Lean UI orchestrator. Business logic lives in services/core."""
+
+    def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Wind Load Generator AASHTO")
 
-        # ---- central widget ----
-        centralWidget = QWidget()
-        self.setCentralWidget(centralWidget)
-        centralWidget_layout = QVBoxLayout(centralWidget)
+        # ---- Core systems ----
+        self.units = get_unit_manager()
+        self.bus = get_app_bus()
+        self.config = ConfigManager()
 
-        # ---------------------------
-        # Wind Parameters (top group)
-        # ---------------------------
-        groupBox_wind_parameters = QGroupBox("Wind Parameters")
+        # ---- Central UI ----
+        container = QWidget()
+        root = QVBoxLayout(container)
+        self.setCentralWidget(container)
 
-        self.wind_speed = QLineEdit("150")
-        self.wind_speed.setValidator(QDoubleValidator(0.0, 400.0, 2, self))
+        # Wind parameters panel
+        self.params_panel = WindParametersPanel(self)
+        root.addWidget(self.params_panel)
 
-        self.exposure = QComboBox()
-        self.exposure.addItems(["B", "C", "D"])
-        self.exposure.setCurrentText("C")
+        # Structural actions
+        actions_group = QGroupBox("Structural Group Classification & Wind Data")
+        actions = QHBoxLayout(actions_group)
+        self.btn_generate = QPushButton("Generate Wind Data")
+        self.btn_edit     = QPushButton("Edit Wind Data")
+        actions.addWidget(self.btn_generate)
+        actions.addWidget(self.btn_edit)
+        root.addWidget(actions_group)
 
-        wind_paramters_layout = QFormLayout(groupBox_wind_parameters)
-        wind_paramters_layout.addRow(QLabel("Wind Speed (mph):"), self.wind_speed)
-        wind_paramters_layout.addRow(QLabel("Exposure Category:"), self.exposure)
+        # Pressure table
+        self.pressure = PressureTable(self)
+        root.addWidget(self.pressure)
 
-        # ---------------------------
-        # Structural Group Classification & Wind Data
-        # ---------------------------
-        groupBox_wind_parameters_stuctural_group = QGroupBox("Structural Group Classification & Wind Data")
+        # Wind load cases
+        wlc_group = QGroupBox("Wind Load Cases")
+        wlc_lay = QHBoxLayout(wlc_group)
+        self.btn_pair = QPushButton("Pair Wind Load Cases")
+        wlc_lay.addWidget(self.btn_pair)
+        root.addWidget(wlc_group)
 
-        self.generate_btn = QPushButton("Generate Wind Data")
-        self.edit_btn     = QPushButton("Edit Wind Data")
-        self.generate_btn.clicked.connect(self.run_classification_and_store)
-        self.edit_btn.clicked.connect(self.open_wind_load_input)
-
-        wind_paramters_stuctural_group_layout = QHBoxLayout(groupBox_wind_parameters_stuctural_group)
-        wind_paramters_stuctural_group_layout.addWidget(self.generate_btn)
-        wind_paramters_stuctural_group_layout.addWidget(self.edit_btn)
-
-        # ---------------------------
         # Toolbar
-        # ---------------------------
-        toolbar = QToolBar()
-        self.addToolBar(toolbar)
-        toolbar.setMovable(False)
+        tb = QToolBar(movable=False)
+        self.addToolBar(tb)
+        act_control = QAction("Control Data", self)
+        tb.addAction(act_control)
 
-        settings_action = QAction("Control Data", self)
-        toolbar.addAction(settings_action)
-        settings_action.triggered.connect(self.open_control_data)
+        # Status bar + unit selectors
+        sb = QStatusBar()
+        self.setStatusBar(sb)
+        self._setup_unit_selectors(sb)
 
-        # ---------------------------
-        # Status Bar + Unit Selection (create UnitSystem BEFORE pressure table)
-        # ---------------------------
-        statusbar = QStatusBar()
-        self.setStatusBar(statusbar)
+        # ---- Connections ----
+        act_control.triggered.connect(self.open_control_data)
+        self.btn_edit.clicked.connect(self.open_wind_load_input)
+        self.btn_pair.clicked.connect(self.open_pair_wind_load_cases)
+        self.btn_generate.clicked.connect(self._on_generate_clicked)
 
-        self.force_unit = QComboBox()
-        self.force_unit.addItems(["KGF", "TONF", "N", "KN", "LBF", "KIP"])
-        self.force_unit.setCurrentText("KIP")
+        # Global events
+        self.bus.progressStarted.connect(self._on_progress_started)
+        self.bus.progressFinished.connect(self._on_progress_finished)
+        self.bus.windGroupsUpdated.connect(self._on_wind_groups_updated)
 
-        self.length_unit = QComboBox()
-        self.length_unit.addItems(["MM", "CM", "M", "IN", "FT"])
-        self.length_unit.setCurrentText("FT")
+        # ---- Restore persisted state ----
+        self.control_data = self.config.load_control_data()
+        self._restore_units_from_config()
+        # populate initial pressure groups (if any)
+        self.pressure.populate_groups()
+        self.pressure.refresh()
 
-        statusbar.addPermanentWidget(self.force_unit)
-        statusbar.addPermanentWidget(self.length_unit)
+    # ---------------- Event handlers ----------------
 
-        # Global unit context (ALL CAPS)
-        self.units = UnitSystem(length_symbol=self.length_unit.currentText(),
-                                force_symbol=self.force_unit.currentText())
+    def _on_generate_clicked(self) -> None:
+        """Kick off classification + wind DB updates in background."""
+        from core.analytical_model_classification import classify_elements
+        from midas import create_structural_group  # your integration layer
 
-        # ---- app-level control data (BASE units: M, N) ----
-        self._control_data = {
-            "structural": {"reference_height_m": 0.0, "pier_radius_m": 10.0},
-            "naming": {
-                "deck_name": "Deck",
-                "pier_base_name": "Pier",
-                "starting_index": 1,
-                "suffix_above": "_SubAbove",
-                "suffix_below": "_SubBelow",
-            },
-            "loads": {"gust_factor": 1.00, "drag_coefficient": 1.20},
-            "units": {"length": self.units.length, "force": self.units.force},
-        }
+        self.bus.progressStarted.emit("Generating wind data...")
+        worker = Worker(self._run_classification_task, classify_elements, create_structural_group)
+        worker.signals.finished.connect(lambda _: self.bus.progressFinished.emit(True, "Wind data generated."))
+        worker.signals.error.connect(lambda e: self.bus.progressFinished.emit(False, e))
+        run_in_thread(worker)
 
-        # Wire combos → UnitSystem
-        self.force_unit.currentTextChanged.connect(self.units.set_force)
-        self.length_unit.currentTextChanged.connect(self.units.set_length)
+    def _run_classification_task(self, classify_elements, create_structural_group):
+        """Runs off the UI thread."""
+        defaults = self.params_panel.values()
+        result = classify_elements()
 
-        # Load previously saved control data, then sync unit combos (triggers UnitSystem)
-        self._load_control_data()
-        self.length_unit.setCurrentText(self._control_data["units"].get("length", self.units.length))
-        self.force_unit.setCurrentText(self._control_data["units"].get("force", self.units.force))
+        # Deck (optional; if present)
+        deck_elements = result.get("deck_elements", {})
+        if deck_elements:
+            deck_ids = list(map(int, deck_elements.keys()))
+            create_structural_group(deck_ids, "Deck Elements")
+            wind_db.add_structural_group("Deck Elements", {
+                **defaults, "Structure Height": "40", "Gust Factor": "0.85",
+                "Drag Coefficient": "1.3", "Member Type": "Girders"
+            })
 
-        # React to unit changes (connect ONCE)
-        self.units.unitsChanged.connect(self._on_units_changed)
+        # Piers / clusters
+        for label, element_dict in (result.get("pier_clusters", {}) or {}).items():
+            ids = list(map(int, element_dict.keys()))
+            create_structural_group(ids, label)
+            wind_db.add_structural_group(label, {
+                **defaults, "Structure Height": "40", "Gust Factor": "0.85",
+                "Drag Coefficient": "1.3", "Member Type": "Trusses, Columns, and Arches"
+            })
 
-        # ---------------------------
-        # Pressure Table (build AFTER units exist)
-        # ---------------------------
-        pressure_group = QGroupBox("Wind Pressure Table")
-        pressure_layout = QVBoxLayout(pressure_group)
+        # Compute pressures (still off-thread)
+        wind_db.update_wind_pressures()
+        # Notify UI to refresh
+        self.bus.windGroupsUpdated.emit(wind_db.get_data())
 
-        # Group selector row
-        group_row = QHBoxLayout()
-        group_row.addWidget(QLabel("Group:"))
-        self.group_combo = QComboBox()
-        group_row.addWidget(self.group_combo)
-        group_row.addStretch()
-        pressure_layout.addLayout(group_row)
+    def _on_wind_groups_updated(self, _payload) -> None:
+        """Refresh widgets that rely on wind_db data."""
+        self.pressure.populate_groups()
+        self.pressure.refresh()
 
-        # Table
-        self.pressure_table = QTableWidget()
-        self.pressure_table.setRowCount(0)  # start empty; fill on selection
-        self.pressure_table.setColumnCount(6)
-        self.pressure_table.setHorizontalHeaderLabels(
-            ["Load Case", "Gust Wind Speed", "Kz", "G", "Cd", "Pz (ksf)"]
-        )
-        self.pressure_table.verticalHeader().setVisible(False)
-        self.pressure_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.pressure_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.pressure_table.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
-        self.pressure_table.verticalHeader().setDefaultSectionSize(28)
-        self.pressure_table.setAlternatingRowColors(True)
-        self.pressure_table.setWordWrap(False)
-        self.pressure_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        pressure_layout.addWidget(self.pressure_table)
+    def _on_progress_started(self, msg: str) -> None:
+        self.statusBar().showMessage(msg)
 
-        # Populate groups & wire selection ONCE
-        self.populate_group_combo()
-        self.group_combo.currentIndexChanged.connect(self.update_pressure_table)
+    def _on_progress_finished(self, ok: bool, msg: str) -> None:
+        icon = "✅" if ok else "❌"
+        self.statusBar().showMessage(f"{icon} {msg}", 4000)
 
-        # Set header with current units & start empty until a real group is selected
-        self._set_pressure_headers()
-        self.update_pressure_table()
+    # ---------------- Dialogs ----------------
 
-        # ---------------------------
-        # Wind Load Cases
-        # ---------------------------
-        groupBox_wind_load_cases = QGroupBox("Wind Load Cases")
-        self.pair_wind_load_cases_btn = QPushButton("Pair Wind Load Cases")
-        self.pair_wind_load_cases_btn.clicked.connect(self.open_pair_wind_load_cases)
-        wind_load_cases_layout = QHBoxLayout(groupBox_wind_load_cases)
-        wind_load_cases_layout.addWidget(self.pair_wind_load_cases_btn)
-
-        # ---------------------------
-        # Add to Central Widget Layout (ONCE, in order)
-        # ---------------------------
-        centralWidget_layout.addWidget(groupBox_wind_parameters)
-        centralWidget_layout.addWidget(groupBox_wind_parameters_stuctural_group)
-        centralWidget_layout.addWidget(pressure_group)
-        centralWidget_layout.addWidget(groupBox_wind_load_cases)
-
-
-
-
-
-    # ---------------------------
-    # Helpers / Actions
-    # ---------------------------
-
-    def get_default_classification_inputs(self) -> dict:
-        """Return Wind Speed and Exposure Category from the main window inputs."""
-        text = (self.wind_speed.text() or "").strip()
-        try:
-            wind_speed_val = float(text)
-        except ValueError:
-            wind_speed_val = 0.0
-
-        return {
-            "Wind Speed": wind_speed_val,
-            "Exposure Category": self.exposure.currentText()
-        }
-
-
-    def run_classification_and_store(self):
-        """
-        Classify model, create structural groups in MIDAS, and persist
-        group parameters into WindDatabase, then recompute wind pressures.
-        """
-        try:
-            # Local import avoids circulars with dialogs
-            from core.analytical_model_classification import classify_elements           
-            from midas import create_structural_group            
-
-            # --- inputs from the main window ---
-            defaults = self.get_default_classification_inputs()  # {"Wind Speed": float, "Exposure Category": "B/C/D"}
-
-            # --- run your classifier (returns dict with keys used below) ---
-            result = classify_elements()
-
-            # --- Deck Elements group ---
-            deck_elements = result.get("deck_elements", {})
-            if deck_elements:
-                deck_ids = list(map(int, deck_elements.keys()))
-                create_structural_group(deck_ids, "Deck Elements")
-
-                wind_db.add_structural_group("Deck Elements", {
-                    **defaults,
-                    "Structure Height": "40",          # TODO: replace placeholders as needed
-                    "Gust Factor": "0.85",
-                    "Drag Coefficient": "1.3",
-                    "Member Type": "Girders"
-                })
-
-            # --- Pier Cluster groups ---
-            pier_clusters = result.get("pier_clusters", {})
-            for group_label, element_dict in pier_clusters.items():
-                element_ids = list(map(int, element_dict.keys()))
-                create_structural_group(element_ids, group_label)
-
-                wind_db.add_structural_group(group_label, {
-                    **defaults,
-                    "Structure Height": "40",
-                    "Gust Factor": "0.85",
-                    "Drag Coefficient": "1.3",
-                    "Member Type": "Trusses, Columns, and Arches"
-                })
-
-            # --- recompute pressures table for all groups ---
-            wind_db.update_wind_pressures()
-            self.populate_group_combo()
-            self.update_pressure_table()
-
-
-            # Optional: if you later add WS/WL creation, call wind_db.add_ws_case / add_wl_case here
-
-            # UX feedback
-            if self.statusBar():
-                self.statusBar().showMessage("✅ Wind data generated: groups saved and pressures updated.", 5000)
-
-        except Exception as exc:
-            # Minimal error toast
-            if self.statusBar():
-                self.statusBar().showMessage(f"❌ Failed to generate wind data: {exc}", 8000)
-            # Also helpful for dev console
-            print("run_classification_and_store error:", exc)
-
-
-
-    def populate_group_combo(self):
-        """Fill the Group dropdown from the Wind Database with a placeholder first."""
-        names = wind_db.list_structural_groups()
-
-        self.group_combo.blockSignals(True)
-        self.group_combo.clear()
-        self.group_combo.addItem("— Select group —")  # placeholder
-        if names:
-            self.group_combo.addItems(names)
-        self.group_combo.setCurrentIndex(0)  # keep placeholder selected by default
-        self.group_combo.blockSignals(False)
-        
-
-    def update_pressure_table(self):
-        """
-        Update pressure table for the selected group using wind_db.wind_pressures.
-        Table remains empty until a real group is selected.
-        """
-        group = (self.group_combo.currentText() or "").strip()
-
-        # If no real group selected, show nothing
-        if not group or group == "— Select group —":
-            self.pressure_table.setRowCount(0)
-            return
-
-        df = wind_db.wind_pressures  # expects columns: Group, Load Case, Gust Wind Speed, Kz, G, Cd, Pz (ksf)
-
-        # Show rows only after a valid group is selected
-        self.pressure_table.setRowCount(len(LOAD_CASES))
-
-        for r, case in enumerate(LOAD_CASES):
-            # Column 0: Load Case (always set after group chosen)
-            self.pressure_table.setItem(r, 0, QTableWidgetItem(case))
-
-            # Filter the dataframe for this group + case
-            row = df[(df["Group"] == group) & (df["Load Case"] == case)]
-
-            if not row.empty:
-                d = row.iloc[0]
-                self.pressure_table.setItem(r, 1, self._num_item(d.get("Gust Wind Speed", "")))
-                self.pressure_table.setItem(r, 2, self._num_item(d.get("Kz", "")))
-                self.pressure_table.setItem(r, 3, self._num_item(d.get("G", "")))
-                self.pressure_table.setItem(r, 4, self._num_item(d.get("Cd", "")))
-                self.pressure_table.setItem(r, 5, self._num_item(d.get("Pz (ksf)", "")))
-            else:
-                # Clear data columns if nothing for this case
-                for c in range(1, 6):
-                    self.pressure_table.setItem(r, c, QTableWidgetItem(""))
-
-
-    def _on_units_changed(self, length_sym: str, force_sym: str):
-        # If you have unit-bearing columns/fields, update their text & headers here.
-        self._refresh_all_views()
-
-    def _refresh_all_views(self):
-        # Example: refresh text fields and tables
-        # self._refresh_parameters_panel()
-        # self._refresh_pressure_table()
-        pass
-
-
-    def open_control_data(self):
+    def open_control_data(self) -> None:
         dlg = ControlData(self, units=self.units)
-
-        # Prefill: convert BASE → UI units for the dialog
-        dlg.set_payload(self._payload_for_dialog())
-
-        # Save back on Apply/OK
+        dlg.set_payload(self.control_data)              # <- preload saved values
         dlg.controlDataChanged.connect(self._on_control_data_changed)
-
         dlg.exec()
 
 
-    def open_wind_load_input(self):
-        dlg = WindLoadInput(self)
-        dlg.exec()
+    def open_wind_load_input(self) -> None:
+        WindLoadInput(self).exec()
 
-    def open_pair_wind_load_cases(self):
-        dlg = PairWindLoadCases(self)
-        dlg.exec()
+    def open_pair_wind_load_cases(self) -> None:
+        PairWindLoadCases(self).exec()
 
-
-
-
-    def _config_path(self) -> Path:
-        cfg_dir = Path(os.path.expanduser("~")) / ".wind_load_generator"
-        cfg_dir.mkdir(parents=True, exist_ok=True)
-        return cfg_dir / "control_data.json"
-
-    def _save_control_data(self) -> None:
-        try:
-            self._config_path().write_text(json.dumps(self._control_data, indent=2))
-        except Exception as e:
-            print("Failed to save control_data.json:", e)
-
-    def _load_control_data(self) -> None:
-        p = self._config_path()
-        if not p.exists():
-            return
-        try:
-            data = json.loads(p.read_text())
-            # be defensive: only update known keys
-            s = data.get("structural", {})
-            n = data.get("naming", {})
-            l = data.get("loads", {})
-            self._control_data["structural"]["reference_height_m"] = float(s.get("reference_height_m", 0.0))
-            self._control_data["structural"]["pier_radius_m"]      = float(s.get("pier_radius_m", 10.0))
-            self._control_data["naming"].update(n)
-            self._control_data["loads"].update(l)
-            self._control_data["units"].update(data.get("units", {}))
-        except Exception as e:
-            print("Failed to load control_data.json:", e)
+    def _on_control_data_changed(self, model) -> None:
+        print("controlDataChanged received")  # Debug confirmation
+        self.control_data = model.to_dict()
+        self.config.save_control_data(self.control_data)
+        self.statusBar().showMessage("Control data saved.", 3000)
 
 
+    # ---------------- Helpers ----------------
 
-    def _on_control_data_changed(self, payload: dict):
-        """
-        Receive dialog data (in CURRENT UI units), convert to BASE, persist,
-        and refresh anything that depends on control data.
-        """
-        u = self.units
+    def _setup_unit_selectors(self, sb: QStatusBar) -> None:
+        """Hook unit selectors to the global UnitManager."""
+        force_combo = QComboBox()
+        force_combo.addItems(["KGF", "TONF", "N", "KN", "LBF", "KIPS"])
+        length_combo = QComboBox()
+        length_combo.addItems(["MM", "CM", "M", "IN", "FT"])
 
-        # Convert UI → BASE (meters)
-        try:
-            ref_h_ui = float(payload["structural"]["reference_height"])
-            pier_r_ui = float(payload["structural"]["pier_radius"])
-        except Exception:
-            ref_h_ui = 0.0
-            pier_r_ui = 10.0
+        length_combo.setCurrentText(self.units.length)
+        force_combo.setCurrentText(self.units.force)
+        length_combo.currentTextChanged.connect(self.units.set_length)
+        force_combo.currentTextChanged.connect(self.units.set_force)
 
-        ref_h_m  = u.to_base_length(ref_h_ui)
-        pier_r_m = u.to_base_length(pier_r_ui)
+        sb.addPermanentWidget(QLabel("Force:"))
+        sb.addPermanentWidget(force_combo)
+        sb.addPermanentWidget(QLabel("Length:"))
+        sb.addPermanentWidget(length_combo)
 
-        # Persist to app-level store (BASE units)
-        self._control_data = {
-            "structural": {
-                "reference_height_m": ref_h_m,
-                "pier_radius_m": pier_r_m,
-            },
-            "naming": {
-                "deck_name": payload["naming"]["deck_name"].strip(),
-                "pier_base_name": payload["naming"]["pier_base_name"].strip(),
-                "starting_index": int(payload["naming"]["starting_index"]),
-                "suffix_above": payload["naming"]["suffix_above"].strip(),
-                "suffix_below": payload["naming"]["suffix_below"].strip(),
-            },
-            "loads": {
-                "gust_factor": float(payload["loads"]["gust_factor"]),
-                "drag_coefficient": float(payload["loads"]["drag_coefficient"]),
-            },
-            "units": {
-                "length": u.length,
-                "force":  u.force,
-            },
-        }
-
-        # OPTIONAL: push to your domain layer if you expose an API:
-        # wind_db.set_control_data(self._control_data)
-
-        # If pressures depend on these values, recompute:
-        # wind_db.update_wind_pressures()
-
-        # refresh any views that should reflect this immediately
-        self.update_pressure_table()
-
-        # UX toast
-        if self.statusBar():
-            self.statusBar().showMessage("Control data saved.", 3000)
-
-        # OPTIONAL: save to disk so it survives restarts
-        self._save_control_data()
-
-    def _payload_for_dialog(self) -> dict:
-        """Return a payload in the CURRENT UI units for ControlData dialog."""
-        u = self.units
-        cd = self._control_data
-
-        ref_h_ui = u.from_base_length(cd["structural"]["reference_height_m"])
-        pier_r_ui = u.from_base_length(cd["structural"]["pier_radius_m"])
-
-        return {
-            "structural": {
-                "reference_height": ref_h_ui,
-                "pier_radius": pier_r_ui,
-            },
-            "naming": dict(cd["naming"]),
-            "loads": dict(cd["loads"]),
-            "units": {"length": u.length, "force": u.force},
-        }
-
-
-    # ---------- helpers & handlers (put these as methods of MainWindow) ----------
-
-    def _set_pressure_headers(self):
-        """
-        Update the last column header to match current units.
-        Pz is pressure ~ force / length^2. We show it textually (no conversion here),
-        since the DataFrame already stores computed values.
-        """
-        f, L = self.units.force, self.units.length   # ALL CAPS
-        headers = ["Load Case", "Gust Wind Speed", "Kz", "G", "Cd", f"Pz ({f}/{L}²)"]
-        self.pressure_table.setHorizontalHeaderLabels(headers)
-
-    def _num_item(self, value, nd=3) -> QTableWidgetItem:
-        """
-        Create a right-aligned numeric cell. Strings pass through unchanged.
-        """
-        if value in (None, ""):
-            txt = ""
-        elif isinstance(value, (int, float)):
-            txt = f"{value:.{nd}f}"
-        else:
-            txt = str(value)
-        it = QTableWidgetItem(txt)
-        it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        return it
-
-    def populate_group_combo(self):
-        """
-        Fill the Group dropdown from the Wind Database with a placeholder first.
-        """
-        names = wind_db.list_structural_groups()
-
-        self.group_combo.blockSignals(True)
-        self.group_combo.clear()
-        self.group_combo.addItem("— Select group —")  # placeholder
-        if names:
-            self.group_combo.addItems(names)
-        self.group_combo.setCurrentIndex(0)  # keep placeholder selected by default
-        self.group_combo.blockSignals(False)
-
-    def update_pressure_table(self):
-        """
-        Update pressure table for the selected group using wind_db.wind_pressures.
-        Table remains empty until a real group is selected.
-        Expects df columns: Group, Load Case, Gust Wind Speed, Kz, G, Cd, Pz (ksf)
-        """
-        group = (self.group_combo.currentText() or "").strip()
-
-        # If no real group selected, show nothing
-        if not group or group == "— Select group —":
-            self.pressure_table.setRowCount(0)
-            return
-
-        df = wind_db.wind_pressures
-
-        # Show rows only after a valid group is selected
-        self.pressure_table.setRowCount(len(LOAD_CASES))
-
-        for r, case in enumerate(LOAD_CASES):
-            # Column 0: Load Case (always set after group chosen)
-            self.pressure_table.setItem(r, 0, QTableWidgetItem(case))
-
-            # Filter the dataframe for this group + case
-            row = df[(df["Group"] == group) & (df["Load Case"] == case)]
-
-            if not row.empty:
-                d = row.iloc[0]
-                self.pressure_table.setItem(r, 1, self._num_item(d.get("Gust Wind Speed", "")))
-                self.pressure_table.setItem(r, 2, self._num_item(d.get("Kz", "")))
-                self.pressure_table.setItem(r, 3, self._num_item(d.get("G", "")))
-                self.pressure_table.setItem(r, 4, self._num_item(d.get("Cd", "")))
-                # The dataframe column name may stay "Pz (ksf)" internally; we only change the header label
-                self.pressure_table.setItem(r, 5, self._num_item(d.get("Pz (ksf)", "")))
-            else:
-                # Clear data columns if nothing for this case
-                for c in range(1, 6):
-                    self.pressure_table.setItem(r, c, QTableWidgetItem(""))
-
-    def _on_units_changed(self, length_sym: str, force_sym: str):
-        """
-        If units change, refresh headers and (optionally) re-render values if you
-        later decide to store base values and display converted ones.
-        For now, only the header changes since df values are already computed.
-        """
-        self._set_pressure_headers()
-        # if gust speed or Pz are recomputed in wind_db based on units,
-        # you can also call wind_db.update_wind_pressures() here.
-        self.update_pressure_table()
+    def _restore_units_from_config(self) -> None:
+        """Apply persisted units (if present) to the UnitManager."""
+        units_cfg = self.control_data.get("units", {})
+        if "length" in units_cfg:
+            self.units.set_length(units_cfg["length"])
+        if "force" in units_cfg:
+            self.units.set_force(units_cfg["force"])
