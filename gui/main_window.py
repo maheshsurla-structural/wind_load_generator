@@ -14,7 +14,7 @@ from core.thread_pool import run_in_thread
 from services.persistence import ConfigManager
 from wind_database import wind_db
 
-from gui.widgets.wind_parameters import WindParametersPanel
+from gui.widgets.wind_parameters import WindParameters
 from gui.widgets.pressure_table import PressureTable
 from gui.dialogs.control_data import ControlData
 from gui.dialogs.wind_load_input import WindLoadInput
@@ -22,10 +22,11 @@ from gui.dialogs.pair_wind_load_cases import PairWindLoadCases
 
 
 class MainWindow(QMainWindow):
-    """Lean UI orchestrator. Business logic lives in services/core."""
 
     def __init__(self) -> None:
+
         super().__init__()
+        
         self.setWindowTitle("Wind Load Generator AASHTO")
 
         # ---- Core systems ----
@@ -34,13 +35,13 @@ class MainWindow(QMainWindow):
         self.config = ConfigManager()
 
         # ---- Central UI ----
-        container = QWidget()
-        root = QVBoxLayout(container)
-        self.setCentralWidget(container)
+        central_widget = QWidget()
+        main_layout  = QVBoxLayout(central_widget)
+        self.setCentralWidget(central_widget)
 
         # Wind parameters panel
-        self.params_panel = WindParametersPanel(self)
-        root.addWidget(self.params_panel)
+        self.wind_parameters = WindParameters(self)
+        main_layout .addWidget(self.wind_parameters)
 
         # Structural actions
         actions_group = QGroupBox("Structural Group Classification & Wind Data")
@@ -49,18 +50,18 @@ class MainWindow(QMainWindow):
         self.btn_edit     = QPushButton("Edit Wind Data")
         actions.addWidget(self.btn_generate)
         actions.addWidget(self.btn_edit)
-        root.addWidget(actions_group)
+        main_layout .addWidget(actions_group)
 
         # Pressure table
         self.pressure = PressureTable(self)
-        root.addWidget(self.pressure)
+        main_layout .addWidget(self.pressure)
 
         # Wind load cases
         wlc_group = QGroupBox("Wind Load Cases")
         wlc_lay = QHBoxLayout(wlc_group)
         self.btn_pair = QPushButton("Pair Wind Load Cases")
         wlc_lay.addWidget(self.btn_pair)
-        root.addWidget(wlc_group)
+        main_layout .addWidget(wlc_group)
 
         # Toolbar
         tb = QToolBar(movable=False)
