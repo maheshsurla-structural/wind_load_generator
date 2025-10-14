@@ -26,14 +26,14 @@ class UnitSystem(QObject):
     def set_length(self, symbol: str) -> None:
         s = symbol.upper()
         if s != self._length:
-            print("[UnitSystem] set_length ->", s)  # debug
+            print("[UnitSystem] set_length ->", s)
             self._length = s
             self.unitsChanged.emit(self._length, self._force)
 
     def set_force(self, symbol: str) -> None:
         s = symbol.upper()
         if s != self._force:
-            print("[UnitSystem] set_force  ->", s)  # debug
+            print("[UnitSystem] set_force  ->", s)
             self._force = s
             self.unitsChanged.emit(self._length, self._force)
 
