@@ -16,7 +16,9 @@ from wind_database import wind_db
 
 from gui.widgets.wind_parameters import WindParameters
 from gui.widgets.pressure_table import PressureTable
+
 from gui.dialogs.control_data import ControlData
+
 from gui.dialogs.wind_load_input import WindLoadInput
 from gui.dialogs.pair_wind_load_cases import PairWindLoadCases
 
