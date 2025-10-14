@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QWidget, QHeaderView
 )
 
-from gui.unit_system import UnitAwareMixin, UnitSystem
+from unit_manager import UnitAwareMixin, UnitSystem
 from wind_database import wind_db
 
 log = logging.getLogger(__name__)

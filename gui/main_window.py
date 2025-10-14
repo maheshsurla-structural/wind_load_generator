@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QAction
 
-from core.unit_manager import get_unit_manager
+from unit_manager import get_unit_manager
 from core.app_bus import get_app_bus
 from core.worker import Worker
 from core.thread_pool import run_in_thread
@@ -39,7 +39,7 @@ class MainWindow(QMainWindow):
         main_layout  = QVBoxLayout(central_widget)
         self.setCentralWidget(central_widget)
 
-        # Wind parameters panel
+        # Wind parameters (imported from widgets/wind_parameters.py)
         self.wind_parameters = WindParameters(self)
         main_layout .addWidget(self.wind_parameters)
 
@@ -52,7 +52,7 @@ class MainWindow(QMainWindow):
         actions.addWidget(self.btn_edit)
         main_layout .addWidget(actions_group)
 
-        # Pressure table
+        # Pressure table (imported from widgets/pressure_table.py)
         self.pressure = PressureTable(self)
         main_layout .addWidget(self.pressure)
 

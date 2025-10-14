@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QDoubleValidator
 
-from gui.unit_system import UnitAwareMixin, UnitSystem
+from unit_manager import UnitAwareMixin, UnitSystem
 
 log = logging.getLogger(__name__)
 

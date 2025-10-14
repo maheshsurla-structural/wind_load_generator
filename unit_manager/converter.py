@@ -1,5 +1,4 @@
-# core/units.py
-# Minimal conversion helpers; extend as needed.
+# unit_manager\converter.py
 
 _LENGTH_TO_M = {
     "MM": 0.001,

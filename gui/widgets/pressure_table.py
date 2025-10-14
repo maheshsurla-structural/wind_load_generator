@@ -2,17 +2,20 @@
 from PySide6.QtWidgets import QWidget, QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QTableWidget, \
     QTableWidgetItem, QSizePolicy, QHeaderView, QAbstractItemView
 from PySide6.QtCore import Qt
-from core.unit_manager import get_unit_manager
-from gui.unit_system import UnitAwareMixin
+from unit_manager.manager import get_unit_manager
+from unit_manager import UnitAwareMixin
 from wind_database import wind_db, LOAD_CASES
 
 class PressureTable(QWidget, UnitAwareMixin):
+
     def __init__(self, parent=None):
+
         super().__init__(parent)
+
         self.units = get_unit_manager()
 
-        self.group = QGroupBox("Wind Pressure Table")
-        vbox = QVBoxLayout(self.group)
+        self.groupBox = QGroupBox("Wind Pressure Table")
+        vbox = QVBoxLayout(self.groupBox)
 
         # group selector
         row = QHBoxLayout()
@@ -37,7 +40,7 @@ class PressureTable(QWidget, UnitAwareMixin):
 
         # layout for this widget
         lay = QVBoxLayout(self)
-        lay.addWidget(self.group)
+        lay.addWidget(self.groupBox)
 
         # populate & wire
         self.populate_groups()
@@ -59,7 +62,9 @@ class PressureTable(QWidget, UnitAwareMixin):
         self.group_combo.blockSignals(False)
 
     def refresh(self):
+        
         group = (self.group_combo.currentText() or "").strip()
+
         if not group or group == "— Select group —":
             self.table.setRowCount(0)
             return
@@ -95,7 +100,7 @@ class PressureTable(QWidget, UnitAwareMixin):
         self.table.setHorizontalHeaderLabels(["Load Case", "Gust Wind Speed", "Kz", "G", "Cd", f"Pz ({f}/{L}²)"])
 
     @staticmethod
-    def _num(value, nd=3):
+    def _num(value, nd=4):
         if value in (None, ""):
             txt = ""
         elif isinstance(value, (int, float)):

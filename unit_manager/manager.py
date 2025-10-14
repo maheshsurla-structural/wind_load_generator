@@ -1,6 +1,6 @@
-# core/unit_manager.py
+# unit_manager\manager.py
 from typing import Optional
-from gui.unit_system import UnitSystem
+from unit_manager.system import UnitSystem
 
 # Singleton instance
 __UNITS: Optional[UnitSystem] = None

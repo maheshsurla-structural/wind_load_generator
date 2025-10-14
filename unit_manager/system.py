@@ -1,6 +1,6 @@
-# gui/unit_system.py
+# unit_manager\system.py
 from PySide6.QtCore import QObject, Signal
-from core.units import convert_length, convert_force
+from unit_manager.converter import convert_length, convert_force
 
 class UnitSystem(QObject):
     """
