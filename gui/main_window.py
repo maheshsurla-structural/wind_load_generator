@@ -107,7 +107,7 @@ class MainWindow(QMainWindow):
 
     def _run_classification_task(self, classify_elements, create_structural_group):
         """Runs off the UI thread."""
-        defaults = self.params_panel.values()
+        defaults = self.wind_parameters.values()
         result = classify_elements()
 
         # Deck (optional; if present)
