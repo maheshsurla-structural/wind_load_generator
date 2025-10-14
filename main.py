@@ -15,7 +15,7 @@ if __name__ == "__main__":
 
 # # if __name__ == "__main__":
 
-#     amc = AnalyticalModelClassification(pier_link_distance=10.0)
+#     amc = AnalyticalModelClassification(pier_link_distance=10.0) 
 #     print(json.dumps(amc.analyze_substructure(), indent=2))
 
 # print(Midas.units.get_all())

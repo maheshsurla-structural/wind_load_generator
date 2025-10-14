@@ -1,7 +1,7 @@
 from midas import get_elements, get_nodes, get_query_element
 from midas import units as Units
 from sklearn.cluster import DBSCAN
-from utils import convert_distance_from_ft
+from unit_manager.converter import convert_length
 import numpy as np
 
 def cluster_vertical_elements(piers, elements=None, nodes=None, eps=10.0):
@@ -15,7 +15,7 @@ def cluster_vertical_elements(piers, elements=None, nodes=None, eps=10.0):
     dist_unit = Units.get("DIST") or "FT"
 
     # convert your eps (defined in feet) into the model’s distance unit
-    eps_in_model_units = convert_distance_from_ft(eps, dist_unit)
+    eps_in_model_units = convert_length(eps, from_sym="FT", to_sym=dist_unit)
 
     centroids, element_ids = [], []
     for eid in piers:
