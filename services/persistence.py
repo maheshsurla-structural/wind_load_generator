@@ -59,8 +59,8 @@ class ConfigManager:
 
     def load_control_data(self) -> dict[str, Any]:
         default = {
-            "version": 1,
-            "structural": {"reference_height": 0.0, "pier_radius": 10.0},  # match dialog
+            "version": 2,  # bumped because the shape changed: structural -> geometry
+            "geometry": {"reference_height": 0.0, "pier_radius": 10.0},
             "naming": {
                 "deck_name": "Deck",
                 "pier_base_name": "Pier",
@@ -74,20 +74,38 @@ class ConfigManager:
         return self.load(
             "control_data.json",
             default=default,
-            version=1,
+            version=2,  # bump
             schema_name="control_data.schema.json",
             migrate=self._migrate_control_data,
         )
 
 
     def save_control_data(self, data: Any) -> None:
-        # Accept dataclasses as well as dicts
-        payload = asdict(data) if is_dataclass(data) else data
+        # Prefer model's to_dict() if available (ControlDataModel)
+        if hasattr(data, "to_dict") and callable(getattr(data, "to_dict")):
+            payload = data.to_dict()
+        elif is_dataclass(data):
+            payload = asdict(data)
+        else:
+            payload = data
+
         if not isinstance(payload, dict):
-            raise ConfigError("control_data must be a dict or dataclass.")
+            raise ConfigError("control_data must be dict, dataclass, or model with to_dict().")
+
+        # Normalize units if caller passed top-level length_unit/force_unit accidentally
+        if "units" not in payload:
+            payload["units"] = {}
+        if "length_unit" in payload:
+            payload["units"]["length"] = payload.pop("length_unit")
+        if "force_unit" in payload:
+            payload["units"]["force"] = str(payload.pop("force_unit")).upper()
+
+        # Ensure version
         if "version" not in payload:
-            payload = {"version": 1, **payload}
+            payload = {"version": 2, **payload}
+
         self.save("control_data.json", payload)
+
 
     # ------------- generic API -------------
 
@@ -214,43 +232,67 @@ class ConfigManager:
         data = dict(old) if isinstance(old, dict) else {}
         ov = int(data.get("version", old_v or 0))
 
-        # Ensure sections exist
-        s = data.setdefault("structural", {})
+        # Ensure sections exist (new shape uses 'geometry')
+        g = data.setdefault("geometry", {})
         n = data.setdefault("naming", {})
         l = data.setdefault("loads", {})
         u = data.setdefault("units", {})
 
-        # --- v0 -> v1: normalize structural keys & convert from meters if needed ---
-        # 1) If old *_m keys exist, move them to new names
-        if "reference_height_m" in s and "reference_height" not in s:
-            s["reference_height"] = s.pop("reference_height_m")
-        if "pier_radius_m" in s and "pier_radius" not in s:
-            s["pier_radius"] = s.pop("pier_radius_m")
-
-        # 2) If we migrated from *_m, convert those meter values to current units (default FT)
-        length = (u.get("length") or "FT").upper()
-        def m_to_unit(x: float, unit: str) -> float:
-            factors = {
-                "M": 1.0, "CM": 100.0, "MM": 1000.0,
-                "FT": 3.280839895, "IN": 39.37007874,
-            }
-            return float(x) * factors.get(unit, 1.0)
-
-        # Convert only if original keys existed in meters
-        if ov < 1 and ("reference_height" in s or "pier_radius" in s):
-            # Heuristically assume pre-v1 values were meters
+        # Handle legacy 'structural' section -> merge into 'geometry'
+        # (do this before the *_m key normalization)
+        legacy_struct = data.get("structural") if isinstance(data.get("structural"), dict) else None
+        if legacy_struct:
+            # move any known fields into geometry if not already present
+            for k, v in legacy_struct.items():
+                g.setdefault(k, v)
+            # drop the legacy section to avoid confusion
             try:
-                if "reference_height" in s:
-                    s["reference_height"] = m_to_unit(float(s["reference_height"]), length)
-                if "pier_radius" in s:
-                    s["pier_radius"] = m_to_unit(float(s["pier_radius"]), length)
+                del data["structural"]
             except Exception:
-                # best-effort; if conversion fails, keep raw values
                 pass
 
-        # Stamp sensible defaults for any missing fields
-        s.setdefault("reference_height", 0.0)
-        s.setdefault("pier_radius", 10.0)
+        # --- v0/v1 -> v2: normalize *_m keys inside geometry ---
+        if "reference_height_m" in g and "reference_height" not in g:
+            g["reference_height"] = g.pop("reference_height_m")
+        if "pier_radius_m" in g and "pier_radius" not in g:
+            g["pier_radius"] = g.pop("pier_radius_m")
+
+        # Normalize units dictionary and collect any legacy top-level fields
+        # e.g., length_unit / force_unit at top level
+        if "length_unit" in data and "length" not in u:
+            u["length"] = data.pop("length_unit")
+        if "force_unit" in data and "force" not in u:
+            u["force"] = str(data.pop("force_unit")).upper()
+
+        # Defaults for units
+        u.setdefault("length", "FT")
+        fu = str(u.get("force") or "KIPS").upper()
+        if fu == "KIP":
+            fu = "KIPS"
+        u["force"] = fu
+
+        # If coming from pre-v1, convert geometry values that were meters to current length unit
+        # (We also support migration when ov == 1 but file still used 'structural'; the conversion
+        # clause is safe to run for ov < 1 as before.)
+        length = str(u.get("length") or "FT").upper()
+
+        def m_to_unit(x: float, unit: str) -> float:
+            factors = {"M": 1.0, "CM": 100.0, "MM": 1000.0, "FT": 3.280839895, "IN": 39.37007874}
+            return float(x) * factors.get(unit, 1.0)
+
+        if ov < 1 and ("reference_height" in g or "pier_radius" in g):
+            try:
+                if "reference_height" in g:
+                    g["reference_height"] = m_to_unit(float(g["reference_height"]), length)
+                if "pier_radius" in g:
+                    g["pier_radius"] = m_to_unit(float(g["pier_radius"]), length)
+            except Exception:
+                # best-effort; keep raw values if conversion fails
+                pass
+
+        # Stamp sensible defaults
+        g.setdefault("reference_height", 0.0)
+        g.setdefault("pier_radius", 10.0)
 
         n.setdefault("deck_name", "Deck")
         n.setdefault("pier_base_name", "Pier")
@@ -261,13 +303,7 @@ class ConfigManager:
         l.setdefault("gust_factor", 1.00)
         l.setdefault("drag_coefficient", 1.20)
 
-        # Also normalize force unit alias
-        fu = (u.get("force") or "KIPS").upper()
-        if fu == "KIP":
-            fu = "KIPS"
-        u["force"] = fu
-        u.setdefault("length", "FT")
-
         data["version"] = new_v
         return data
+
 
