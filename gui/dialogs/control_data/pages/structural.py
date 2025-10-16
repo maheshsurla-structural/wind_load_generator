@@ -1,4 +1,4 @@
-#gui\dialogs\control_data_folder\pages\structural.py
+# gui\dialogs\control_data\pages\structural.py
 
 from __future__ import annotations
 from PySide6.QtWidgets import QWidget, QFormLayout, QLineEdit, QLabel, QGroupBox, QFormLayout, QSpinBox, QHBoxLayout
@@ -16,7 +16,7 @@ class StructuralPage(QWidget, ControlDataPage):
         form = QFormLayout(self)
 
         self.txt_ground = QLineEdit("0.0")
-        self.txt_ground.setValidator(QDoubleValidator(0.0, 1e9, 3, self))
+        self.txt_ground.setValidator(QDoubleValidator(-1e9, 1e9, 3, self))
         self.txt_radius = QLineEdit("10.0")
         self.txt_radius.setValidator(QDoubleValidator(0.0, 1e9, 3, self))
         self.lbl_len1, self.lbl_len2 = QLabel("?"), QLabel("?")
@@ -68,16 +68,21 @@ class StructuralPage(QWidget, ControlDataPage):
             suffix_below=self.txt_below.text().strip(),
         )
 
+
     def validate(self) -> tuple[bool, str]:
         try:
-            h = float(self.txt_ground.text()); r = float(self.txt_radius.text())
+            h = float(self.txt_ground.text())
+            r = float(self.txt_radius.text())
         except ValueError:
             return False, "Ground Level and Pier Radius must be numeric."
-        if h < 0 or r < 0:
-            return False, "Values must be non-negative."
+
+        # Ground Level may be negative; only radius must be non-negative
+        if r < 0:
+            return False, "Pier Proximity Radius must be non-negative."
         if not self.txt_deck.text().strip():
             return False, "Deck name cannot be empty."
         return True, ""
+
 
     def on_units_changed(self, units, prev_len: str, new_len: str, prev_force: str, new_force: str) -> None:
         # convert the two length fields if unit changed

@@ -1,4 +1,4 @@
-# gui\dialogs\control_data_folder\pages\base.py
+# gui\dialogs\control_data\pages\base.py
 
 from __future__ import annotations
 

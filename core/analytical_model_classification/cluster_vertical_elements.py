@@ -1,21 +1,30 @@
+# core/analytical_model_classification/cluster_vertical_elements.py
+
 from midas import get_elements, get_nodes, get_query_element
 from midas import units as Units
 from sklearn.cluster import DBSCAN
 from unit_manager.converter import convert_length
 import numpy as np
 
-def cluster_vertical_elements(piers, elements=None, nodes=None, eps=10.0):
-
+def cluster_vertical_elements(
+    piers,
+    elements=None,
+    nodes=None,
+    *,
+    eps: float = 10.0,
+    eps_unit: str = "FT",       # NEW: unit of eps from UI/Control Data
+    base_name: str = "Pier",    # NEW: naming base for clusters
+):
     if elements is None:
         elements = get_elements()
     if nodes is None:
         nodes = get_nodes()
 
-    # READ ONCE from MIDAS via the new class (fallback to 'FT' if empty)
+    # model’s distance unit (fallback to 'FT')
     dist_unit = Units.get("DIST") or "FT"
 
-    # convert your eps (defined in feet) into the model’s distance unit
-    eps_in_model_units = convert_length(eps, from_sym="FT", to_sym=dist_unit)
+    # convert eps from UI units -> model units
+    eps_in_model_units = convert_length(eps, from_sym=eps_unit, to_sym=dist_unit)
 
     centroids, element_ids = [], []
     for eid in piers:
@@ -32,5 +41,5 @@ def cluster_vertical_elements(piers, elements=None, nodes=None, eps=10.0):
 
     clusters = {}
     for eid, label in zip(element_ids, clustering.labels_):
-        clusters.setdefault(f"Pier {label+1}", []).append(eid)
+        clusters.setdefault(f"{base_name} {label+1}", []).append(eid)
     return clusters

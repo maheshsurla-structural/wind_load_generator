@@ -1,4 +1,4 @@
-# gui\dialogs\control_data_folder\dialog.py
+# gui\dialogs\control_data\dialog.py
 
 from __future__ import annotations
 from typing import Optional

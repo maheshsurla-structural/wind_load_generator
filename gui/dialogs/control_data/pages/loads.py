@@ -1,4 +1,4 @@
-# gui\dialogs\control_data_folder\pages\loads.py
+# gui\dialogs\control_data\pages\loads.py
 
 from __future__ import annotations
 from PySide6.QtWidgets import QWidget, QFormLayout, QDoubleSpinBox

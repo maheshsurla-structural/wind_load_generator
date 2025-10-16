@@ -1,4 +1,4 @@
-# gui\dialogs\control_data_folder\pages\units.py
+# gui\dialogs\control_data\pages\units.py
 
 from __future__ import annotations
 from PySide6.QtWidgets import QWidget, QFormLayout, QLabel
