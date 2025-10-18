@@ -233,7 +233,12 @@ class MainWindow(QMainWindow):
         WindLoadInput(self).exec()
 
     def open_pair_wind_load_cases(self) -> None:
-        PairWindLoadCases(self).exec()
+        naming = getattr(getattr(self, "control_model", None), "naming", None)
+        naming = getattr(naming, "wind", None)
+        dlg = PairWindLoadCases(self, naming=naming)
+        dlg.exec()
+
+
 
     def _on_control_data_changed(self, model: ControlDataModel) -> None:
         self.control_model = model                        # keep live copy

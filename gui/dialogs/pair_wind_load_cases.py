@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, asdict, field
-from typing import List, Dict
+from typing import List, Dict, Optional
+
 
 import pandas as pd
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, Signal, QEvent
@@ -14,6 +15,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QGuiApplication, QFont
 
 from wind_database import wind_db, LOAD_CASES
+
+from gui.dialogs.control_data.models import WindLoadNamingSettings
 
 log = logging.getLogger(__name__)
 
@@ -37,22 +40,67 @@ class PairWindLoadModel:
         df_wl = pd.DataFrame([asdict(a) for a in self.wl_cases])
         return {"WS Cases": df_ws, "WL Cases": df_wl}
 
+# --------------------------- Helpers ---------------------------
+
+def _parse_row_label(label: str) -> tuple[str, str]:
+    """
+    Turn 'Strength III' -> ('strength', 'III')
+         'Service I'    -> ('service', 'I')
+    Fallback to ('', '') if we can't parse.
+    """
+    txt = (label or "").strip()
+    if not txt:
+        return "", ""
+    parts = txt.split()
+    if len(parts) < 2:
+        return "", ""
+    head = parts[0].lower()
+    code = parts[-1].strip(",")
+    if head.startswith("strength"):
+        return "strength", code
+    if head.startswith("service"):
+        return "service", code
+    return "", code
+
+
+def _compose_name(
+    cfg: WindLoadNamingSettings,
+    *,
+    base: str,
+    limit_kind: str,   # 'strength' | 'service'
+    case_code: str,
+    angle: int | float
+) -> str:
+    limit = cfg.limit_state_labels.strength_label if limit_kind == "strength" else cfg.limit_state_labels.service_label
+    tokens = {
+        "base": base,
+        "limit": limit,
+        "case": case_code,
+        "angle_prefix": cfg.angle.prefix,
+        "angle": f"{angle:g}",
+    }
+    return cfg.text.template.format(**tokens)
+
+
+
 
 # --------------------------- Table Model ---------------------------
 
 class WindLoadTableModel(QAbstractTableModel):
-    def __init__(self, load_cases: List[str], num_angles: int, title: str):
+    def __init__(self, load_cases: List[str], angle_values: List[int], title: str, angle_prefix: str = "Ang"):
         super().__init__()
         self.load_cases = load_cases
-        self.num_angles = num_angles
+        self.angle_values = list(angle_values)
         self.title = title
-        self._data = [["" for _ in range(num_angles)] for _ in load_cases]
+        self.angle_prefix = angle_prefix
+        self._data = [["" for _ in range(len(self.angle_values))] for _ in load_cases]
 
     def rowCount(self, parent=QModelIndex()) -> int:
         return len(self.load_cases)
 
     def columnCount(self, parent=QModelIndex()) -> int:
-        return self.num_angles + 1  # first column is case label
+        # first column is the load-case label
+        return 1 + len(self.angle_values)
 
     def data(self, index: QModelIndex, role=Qt.DisplayRole):
         if not index.isValid():
@@ -81,7 +129,14 @@ class WindLoadTableModel(QAbstractTableModel):
 
     def headerData(self, section: int, orientation, role=Qt.DisplayRole):
         if role == Qt.DisplayRole and orientation == Qt.Horizontal:
-            return "Load Case" if section == 0 else f"Angle {section}"
+            if section == 0:
+                return "Load Case"
+            # Section-1 maps to the angle index
+            try:
+                ang = self.angle_values[section - 1]
+                return f"{self.angle_prefix} {ang}"
+            except Exception:
+                return f"Angle {section}"
         return None
 
     def to_assignments(self, angles: List[int]) -> List[LoadCaseAssignment]:
@@ -95,19 +150,25 @@ class WindLoadTableModel(QAbstractTableModel):
         return recs
 
 
+
 # --------------------------- Dialog ---------------------------
 
 class PairWindLoadCases(QDialog):
     dataChanged = Signal(PairWindLoadModel)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, naming: Optional[WindLoadNamingSettings] = None):
         super().__init__(parent)
         self.setWindowTitle("Pair Wind Load Cases")
         self.resize(940, 640)
 
+        # naming config (used for auto names & headers)
+        self.naming: WindLoadNamingSettings = naming or WindLoadNamingSettings()
+
         self.num_angles = 3
         self._build_ui()
         self._load_from_db()
+        # Autofill any empty cells after initial load
+        self._autofill_current_tables()
         self.installEventFilter(self)
 
     # ---------------- UI ----------------
@@ -133,14 +194,19 @@ class PairWindLoadCases(QDialog):
             cb.addItems(defaults)
             cb.setCurrentIndex(i if i < len(defaults) else 0)
             cb.setEnabled(i < self.num_angles)
+            # NEW: rebuild when angle TEXT changes so headers + autofill refresh
+            cb.currentTextChanged.connect(lambda _=None: self._rebuild_models(self.spin_num.value()))
             self.combo_angles.append(cb)
             lay.addWidget(cb)
 
+
         root.addWidget(gb_angles)
 
-        # Tables
-        self.ws_model = WindLoadTableModel(LOAD_CASES, self.num_angles, "WS")
-        self.wl_model = WindLoadTableModel(LOAD_CASES, self.num_angles, "WL")
+        # Tables (use actual angle values + naming prefix for headers)
+        angles_now = self._active_angles()
+        ang_prefix = self.naming.angle.prefix
+        self.ws_model = WindLoadTableModel(LOAD_CASES, angles_now, "WS", ang_prefix)
+        self.wl_model = WindLoadTableModel(LOAD_CASES, angles_now, "WL", ang_prefix)
         self.ws_group = self._make_table_group("Wind on Structure (WS)", self.ws_model)
         self.wl_group = self._make_table_group("Wind on Live Load (WL)", self.wl_model)
         root.addWidget(self.ws_group)
@@ -157,6 +223,7 @@ class PairWindLoadCases(QDialog):
 
         self.btn_apply.clicked.connect(self._on_apply)
         self.btn_close.clicked.connect(self.close)
+
 
     def _make_table_group(self, title: str, model: QAbstractTableModel) -> QGroupBox:
         gb = QGroupBox(title)
@@ -176,9 +243,14 @@ class PairWindLoadCases(QDialog):
             cb.setEnabled(i < n)
         self._rebuild_models(n)
 
+
     def _rebuild_models(self, n: int):
-        self.ws_model = WindLoadTableModel(LOAD_CASES, n, "WS")
-        self.wl_model = WindLoadTableModel(LOAD_CASES, n, "WL")
+        angles_now = self._active_angles()
+        ang_prefix = self.naming.angle.prefix
+
+        self.ws_model = WindLoadTableModel(LOAD_CASES, angles_now, "WS", ang_prefix)
+        self.wl_model = WindLoadTableModel(LOAD_CASES, angles_now, "WL", ang_prefix)
+
         # replace views inside groups
         for grp, model in ((self.ws_group, self.ws_model), (self.wl_group, self.wl_model)):
             lay = grp.layout()
@@ -190,6 +262,41 @@ class PairWindLoadCases(QDialog):
             v.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
             v.verticalHeader().setVisible(False)
             lay.addWidget(v)
+
+        # After rebuilding, auto-fill blank cells using naming rules
+        self._autofill_current_tables()
+
+
+    def _autofill_current_tables(self):
+        """Fill empty cells in WS/WL tables using the naming config."""
+        angles = self._active_angles()
+        self._autofill_model(self.ws_model, base=self.naming.bases.wind_on_structure, angles=angles)
+        self._autofill_model(self.wl_model, base=self.naming.bases.wind_on_live_load, angles=angles)
+
+    def _autofill_model(self, model: 'WindLoadTableModel', *, base: str, angles: List[int]):
+        """For each row/angle, if empty, compose a name using current naming rules."""
+        cfg = self.naming
+        for r, label in enumerate(model.load_cases):
+            limit_kind, case_code = _parse_row_label(label)
+            if not limit_kind or not case_code:
+                continue
+            for c, ang in enumerate(angles):
+                # skip if user already typed something
+                if c < len(model._data[r]) and (model._data[r][c] or "").strip():
+                    continue
+                name = _compose_name(
+                    cfg,
+                    base=base,
+                    limit_kind=limit_kind,
+                    case_code=case_code,
+                    angle=ang,
+                )
+                model._data[r][c] = name
+        # notify views
+        top_left = model.index(0, 1)
+        bottom_right = model.index(model.rowCount() - 1, model.columnCount() - 1)
+        model.dataChanged.emit(top_left, bottom_right, [Qt.DisplayRole])
+
 
     def eventFilter(self, source, event):
         if event.type() == QEvent.Type.KeyPress:
@@ -264,7 +371,7 @@ class PairWindLoadCases(QDialog):
         self._rebuild_models(len(angles))
         # after rebuild, model reference changed:
         target = self.ws_model if model.title == "WS" else self.wl_model
-        # fill
+        # fill existing values from DB
         for _, row in df.iterrows():
             try:
                 r = LOAD_CASES.index(row["Case"])
@@ -272,3 +379,8 @@ class PairWindLoadCases(QDialog):
                 target._data[r][c] = str(row.get("Value", ""))
             except Exception:
                 continue
+        # NEW: now autofill any blanks using naming rules
+        base = self.naming.bases.wind_on_structure if target.title == "WS" \
+            else self.naming.bases.wind_on_live_load
+        self._autofill_model(target, base=base, angles=angles)
+
