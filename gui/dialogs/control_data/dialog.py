@@ -12,6 +12,7 @@ from .models import ControlDataModel
 from .pages.structural import StructuralPage
 from .pages.loads import LoadsPage
 from .pages.units import UnitsPage
+from .pages.wind_naming import WindNamingPage
 
 class ControlData(QDialog, UnitAwareMixin):
     """Entry point dialog that stacks page widgets and aggregates their state."""
@@ -29,6 +30,7 @@ class ControlData(QDialog, UnitAwareMixin):
         # --- pages (each page = single file with all its logic) ---
         self._pages = [
             StructuralPage(self),
+            WindNamingPage(self),
             LoadsPage(self),
             UnitsPage(self.units, self),
         ]

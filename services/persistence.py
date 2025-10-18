@@ -59,7 +59,7 @@ class ConfigManager:
 
     def load_control_data(self) -> dict[str, Any]:
         default = {
-            "version": 2,  # bumped because the shape changed: structural -> geometry
+            "version": 4,  # bump: wind naming simplification (only prefix + template)
             "geometry": {"reference_height": 0.0, "pier_radius": 10.0},
             "naming": {
                 "deck_name": "Deck",
@@ -67,6 +67,26 @@ class ConfigManager:
                 "starting_index": 1,
                 "suffix_above": "_SubAbove",
                 "suffix_below": "_SubBelow",
+                "wind": {
+                    "bases": {
+                        "wind_on_structure": "WS",
+                        "wind_on_live_load": "WL",
+                    },
+                    "limit_state_labels": {
+                        "strength_label": "ULS",
+                        "service_label": "SLS",
+                    },
+                    "cases": {
+                        "strength_cases": ["III", "V"],
+                        "service_cases": ["I", "IV"],
+                    },
+                    "angle": {
+                        "prefix": "Ang",
+                    },
+                    "text": {
+                        "template": "{base}_{limit}_{case}_{angle_prefix}_{angle}",
+                    },
+                },
             },
             "loads": {"gust_factor": 1.00, "drag_coefficient": 1.20},
             "units": {"length": "FT", "force": "KIPS"},
@@ -74,10 +94,11 @@ class ConfigManager:
         return self.load(
             "control_data.json",
             default=default,
-            version=2,  # bump
+            version=4,  # target schema version
             schema_name="control_data.schema.json",
             migrate=self._migrate_control_data,
         )
+
 
 
     def save_control_data(self, data: Any) -> None:
@@ -102,7 +123,7 @@ class ConfigManager:
 
         # Ensure version
         if "version" not in payload:
-            payload = {"version": 2, **payload}
+            payload = {"version": 4, **payload}
 
         self.save("control_data.json", payload)
 
@@ -228,6 +249,7 @@ class ConfigManager:
 
     # ------------- migrations -------------
 
+
     def _migrate_control_data(self, old: dict, old_v: int, new_v: int) -> dict:
         data = dict(old) if isinstance(old, dict) else {}
         ov = int(data.get("version", old_v or 0))
@@ -238,27 +260,23 @@ class ConfigManager:
         l = data.setdefault("loads", {})
         u = data.setdefault("units", {})
 
-        # Handle legacy 'structural' section -> merge into 'geometry'
-        # (do this before the *_m key normalization)
+        # ---- Legacy 'structural' -> merge into 'geometry'
         legacy_struct = data.get("structural") if isinstance(data.get("structural"), dict) else None
         if legacy_struct:
-            # move any known fields into geometry if not already present
             for k, v in legacy_struct.items():
                 g.setdefault(k, v)
-            # drop the legacy section to avoid confusion
             try:
                 del data["structural"]
             except Exception:
                 pass
 
-        # --- v0/v1 -> v2: normalize *_m keys inside geometry ---
+        # ---- v0/v1 -> v2: normalize *_m keys inside geometry
         if "reference_height_m" in g and "reference_height" not in g:
             g["reference_height"] = g.pop("reference_height_m")
         if "pier_radius_m" in g and "pier_radius" not in g:
             g["pier_radius"] = g.pop("pier_radius_m")
 
-        # Normalize units dictionary and collect any legacy top-level fields
-        # e.g., length_unit / force_unit at top level
+        # ---- Normalize units (accept legacy top-level keys)
         if "length_unit" in data and "length" not in u:
             u["length"] = data.pop("length_unit")
         if "force_unit" in data and "force" not in u:
@@ -271,9 +289,7 @@ class ConfigManager:
             fu = "KIPS"
         u["force"] = fu
 
-        # If coming from pre-v1, convert geometry values that were meters to current length unit
-        # (We also support migration when ov == 1 but file still used 'structural'; the conversion
-        # clause is safe to run for ov < 1 as before.)
+        # ---- If coming from very old versions, convert geometry values from meters to current length unit
         length = str(u.get("length") or "FT").upper()
 
         def m_to_unit(x: float, unit: str) -> float:
@@ -290,20 +306,82 @@ class ConfigManager:
                 # best-effort; keep raw values if conversion fails
                 pass
 
-        # Stamp sensible defaults
+        # ---- Stamp sensible geometry defaults
         g.setdefault("reference_height", 0.0)
         g.setdefault("pier_radius", 10.0)
 
+        # ---- Naming defaults (structural)
         n.setdefault("deck_name", "Deck")
         n.setdefault("pier_base_name", "Pier")
         n.setdefault("starting_index", 1)
         n.setdefault("suffix_above", "_SubAbove")
         n.setdefault("suffix_below", "_SubBelow")
 
+        # ---- Loads defaults
         l.setdefault("gust_factor", 1.00)
         l.setdefault("drag_coefficient", 1.20)
 
+        # ======================================================================
+        # Wind naming migration & normalization (→ v4 simplified schema)
+        # ======================================================================
+        # Ensure 'wind' exists and is a dict (guard against null/str/list)
+        wind = n.get("wind")
+        if not isinstance(wind, dict):
+            wind = {}
+        n["wind"] = wind
+
+        # Coerce sub-sections to dicts as well
+        def _dict_or(d, key):
+            val = d.get(key)
+            if not isinstance(val, dict):
+                val = {}
+                d[key] = val
+            return val
+
+        bases = _dict_or(wind, "bases")
+        limits = _dict_or(wind, "limit_state_labels")
+        cases  = _dict_or(wind, "cases")
+        angle  = _dict_or(wind, "angle")
+        text   = _dict_or(wind, "text")
+
+        # Defaults
+        bases.setdefault("wind_on_structure", "WS")
+        bases.setdefault("wind_on_live_load", "WL")
+
+        limits.setdefault("strength_label", "ULS")
+        limits.setdefault("service_label", "SLS")
+
+        def _as_list(v, fallback):
+            if isinstance(v, list):
+                return [str(x) for x in v if str(x).strip()]
+            if isinstance(v, str):
+                parts = [t.strip() for t in v.split(",") if t.strip()]
+                return parts or fallback
+            return fallback
+
+        cases["strength_cases"] = _as_list(cases.get("strength_cases"), ["III", "V"])
+        cases["service_cases"]  = _as_list(cases.get("service_cases"),  ["I", "IV"])
+
+        # Angle simplified: only 'prefix'
+        angle["prefix"] = str(angle.get("prefix") or "Ang")
+        for k in ("decimals", "zero_pad", "unit_suffix"):
+            angle.pop(k, None)
+
+        # Text simplified: only 'template'
+        text["template"] = str(text.get("template") or "{base}_{limit}_{case}_{angle_prefix}_{angle}")
+        text.pop("upper_case", None)
+
+        # Reattach (explicit; already referencing same dicts, but keeps intent clear)
+        wind["bases"] = bases
+        wind["limit_state_labels"] = limits
+        wind["cases"] = cases
+        wind["angle"] = angle
+        wind["text"] = text
+
+
+        # ---- Finalize
         data["version"] = new_v
         return data
+
 
 
