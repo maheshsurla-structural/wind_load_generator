@@ -57,9 +57,10 @@ class ConfigManager:
 
     # ------------- public high-level helpers (project-specific) -------------
 
+
     def load_control_data(self) -> dict[str, Any]:
         default = {
-            "version": 4,  # bump: wind naming simplification (only prefix + template)
+            "version": 4,
             "geometry": {"reference_height": 0.0, "pier_radius": 10.0},
             "naming": {
                 "deck_name": "Deck",
@@ -68,33 +69,28 @@ class ConfigManager:
                 "suffix_above": "_SubAbove",
                 "suffix_below": "_SubBelow",
                 "wind": {
-                    "bases": {
-                        "wind_on_structure": "WS",
-                        "wind_on_live_load": "WL",
-                    },
-                    "limit_state_labels": {
-                        "strength_label": "ULS",
-                        "service_label": "SLS",
-                    },
-                    "cases": {
-                        "strength_cases": ["III", "V"],
-                        "service_cases": ["I", "IV"],
-                    },
-                    "angle": {
-                        "prefix": "Ang",
-                    },
-                    "text": {
-                        "template": "{base}_{limit}_{case}_{angle_prefix}_{angle}",
-                    },
+                    "bases": {"wind_on_structure": "WS", "wind_on_live_load": "WL"},
+                    "limit_state_labels": {"strength_label": "ULS", "service_label": "SLS"},
+                    "cases": {"strength_cases": ["III", "V"], "service_cases": ["I", "IV"]},
+                    "angle": {"prefix": "Ang"},
+                    "text": {"template": "{base}_{limit}_{case}_{angle_prefix}_{angle}"},
                 },
             },
-            "loads": {"gust_factor": 1.00, "drag_coefficient": 1.20},
+            "loads": {
+                "gust_factor": 1.00,
+                "drag_coefficient": 1.20,
+                # NEW: skew defaults (fixed-angle table: 0,15,30,45,60)
+                "skew": {
+                    "transverse":  [1.000, 0.880, 0.820, 0.660, 0.340],
+                    "longitudinal": [0.000, 0.120, 0.240, 0.320, 0.380],
+                },
+            },
             "units": {"length": "FT", "force": "KIPS"},
         }
         return self.load(
             "control_data.json",
             default=default,
-            version=4,  # target schema version
+            version=4,
             schema_name="control_data.schema.json",
             migrate=self._migrate_control_data,
         )
@@ -102,6 +98,11 @@ class ConfigManager:
 
 
     def save_control_data(self, data: Any) -> None:
+        """
+        Persist control data to control_data.json.
+        Accepts a ControlDataModel (with .to_dict), a dataclass, or a plain dict.
+        Normalizes units and guarantees a valid loads.skew shape before writing.
+        """
         # Prefer model's to_dict() if available (ControlDataModel)
         if hasattr(data, "to_dict") and callable(getattr(data, "to_dict")):
             payload = data.to_dict()
@@ -113,19 +114,38 @@ class ConfigManager:
         if not isinstance(payload, dict):
             raise ConfigError("control_data must be dict, dataclass, or model with to_dict().")
 
-        # Normalize units if caller passed top-level length_unit/force_unit accidentally
-        if "units" not in payload:
-            payload["units"] = {}
-        if "length_unit" in payload:
-            payload["units"]["length"] = payload.pop("length_unit")
-        if "force_unit" in payload:
-            payload["units"]["force"] = str(payload.pop("force_unit")).upper()
+        # ---- Normalize units (accept legacy top-level keys) ----
+        units = payload.get("units")
+        if not isinstance(units, dict):
+            units = {}
+            payload["units"] = units
 
-        # Ensure version
+        if "length_unit" in payload:  # migrate legacy top-level field
+            units["length"] = payload.pop("length_unit")
+        if "force_unit" in payload:   # migrate legacy top-level field
+            units["force"] = str(payload.pop("force_unit")).upper()
+
+        # Stamp sensible unit defaults and normalize force spelling
+        units.setdefault("length", "FT")
+        f = str(units.get("force", "KIPS")).upper()
+        if f == "KIP":
+            f = "KIPS"
+        units["force"] = f
+
+        # ---- Ensure loads.skew is present and valid (5 values each) ----
+        loads = payload.setdefault("loads", {})
+        skew_in = loads.get("skew", {})
+        if not isinstance(skew_in, dict):
+            skew_in = {}
+        loads["skew"] = self._coerce_skew_arrays(skew_in)
+
+        # ---- Ensure version ----
         if "version" not in payload:
-            payload = {"version": 4, **payload}
+            payload["version"] = 4
 
+        # ---- Save atomically with backup ----
         self.save("control_data.json", payload)
+
 
 
     # ------------- generic API -------------
@@ -247,6 +267,37 @@ class ConfigManager:
             # Silent best-effort; avoid raising here
             pass
 
+
+
+    def _coerce_skew_arrays(self, skew_in: dict) -> dict:
+        """
+        Ensure skew has 5 floats for both transverse and longitudinal.
+        Truncates or pads with defaults as needed and coerces types safely.
+        """
+        defaults_t = [1.000, 0.880, 0.820, 0.660, 0.340]
+        defaults_l = [0.000, 0.120, 0.240, 0.320, 0.380]
+        N = 5
+
+        def _as_float_list(v, fallback):
+            if isinstance(v, (list, tuple)):
+                out = []
+                for x in v:
+                    try:
+                        out.append(float(x))
+                    except Exception:
+                        # fall back to default position if bad entry
+                        out.append(None)
+                # pad/truncate & fill missing with fallback
+                out = (out[:N] + [None] * N)[:N]
+                return [out[i] if out[i] is not None else fallback[i] for i in range(N)]
+            return fallback
+
+        t = _as_float_list(skew_in.get("transverse"), defaults_t)
+        g = _as_float_list(skew_in.get("longitudinal"), defaults_l)
+        return {"transverse": t, "longitudinal": g}
+
+
+
     # ------------- migrations -------------
 
 
@@ -320,6 +371,13 @@ class ConfigManager:
         # ---- Loads defaults
         l.setdefault("gust_factor", 1.00)
         l.setdefault("drag_coefficient", 1.20)
+
+        # ---- NEW: Ensure skew table exists and is valid (fixed 5-angle table)
+        skew_in = l.get("skew")
+        if not isinstance(skew_in, dict):
+            skew_in = {}
+        l["skew"] = self._coerce_skew_arrays(skew_in)
+
 
         # ======================================================================
         # Wind naming migration & normalization (→ v4 simplified schema)
