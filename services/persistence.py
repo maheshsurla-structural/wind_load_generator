@@ -60,7 +60,7 @@ class ConfigManager:
 
     def load_control_data(self) -> dict[str, Any]:
         default = {
-            "version": 4,
+            "version": 5,
             "geometry": {"reference_height": 0.0, "pier_radius": 10.0},
             "naming": {
                 "deck_name": "Deck",
@@ -79,6 +79,7 @@ class ConfigManager:
             "loads": {
                 "gust_factor": 1.00,
                 "drag_coefficient": 1.20,
+                "crash_barrier_depth": 0.0,
                 # NEW: skew defaults (fixed-angle table: 0,15,30,45,60)
                 "skew": {
                     "transverse":  [1.000, 0.880, 0.820, 0.660, 0.340],
@@ -90,7 +91,7 @@ class ConfigManager:
         return self.load(
             "control_data.json",
             default=default,
-            version=4,
+            version=5,
             schema_name="control_data.schema.json",
             migrate=self._migrate_control_data,
         )
@@ -139,9 +140,16 @@ class ConfigManager:
             skew_in = {}
         loads["skew"] = self._coerce_skew_arrays(skew_in)
 
+
+        # ---- Ensure crash_barrier_depth exists and is a number ----
+        try:
+            loads["crash_barrier_depth"] = float(loads.get("crash_barrier_depth", 0.0) or 0.0)
+        except Exception:
+            loads["crash_barrier_depth"] = 0.0
+
         # ---- Ensure version ----
         if "version" not in payload:
-            payload["version"] = 4
+            payload["version"] = 5
 
         # ---- Save atomically with backup ----
         self.save("control_data.json", payload)
@@ -371,6 +379,19 @@ class ConfigManager:
         # ---- Loads defaults
         l.setdefault("gust_factor", 1.00)
         l.setdefault("drag_coefficient", 1.20)
+
+
+        # ---- NEW in v5: crash_barrier_depth (accept legacy aliases)
+        # Legacy keys we’ll accept: 'crash_pattern_width', 'crash_barrier_width'
+        if "crash_barrier_depth" not in l:
+            for k in ("crash_pattern_width", "crash_barrier_width"):
+                if k in l:
+                    l["crash_barrier_depth"] = l.get(k)
+                    break
+        try:
+            l["crash_barrier_depth"] = float(l.get("crash_barrier_depth", 0.0) or 0.0)
+        except Exception:
+            l["crash_barrier_depth"] = 0.0
 
         # ---- NEW: Ensure skew table exists and is valid (fixed 5-angle table)
         skew_in = l.get("skew")

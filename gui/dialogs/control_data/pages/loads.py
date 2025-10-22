@@ -3,10 +3,11 @@
 from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QWidget, QFormLayout, QDoubleSpinBox,
+    QWidget, QFormLayout, QDoubleSpinBox, QLineEdit, QLabel, QHBoxLayout,
     QGroupBox, QVBoxLayout, QTableWidget, QTableWidgetItem,
     QHeaderView, QSizePolicy
 )
+from PySide6.QtGui import QDoubleValidator
 
 from .base import ControlDataPage
 from ..models import ControlDataModel, LoadSettings, SkewCoefficients
@@ -17,6 +18,7 @@ class LoadsPage(QWidget, ControlDataPage):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._length_labels: list[QLabel] = []
 
         # ---- Root layout (match Structural page) ----
         form = QFormLayout(self)
@@ -38,6 +40,14 @@ class LoadsPage(QWidget, ControlDataPage):
 
         form.addRow("Gust Factor", self.spin_gust)
         form.addRow("Drag Coefficient", self.spin_drag)
+
+        # --- Crash Barrier Depth (length with unit label) ---
+        self.txt_barrier = QLineEdit("0.0")
+        self.txt_barrier.setValidator(QDoubleValidator(0, 1e12, 6, self))
+        self.lbl_barrier_unit = QLabel("?")
+        form.addRow(*self._row("Crash Barrier Depth", self.txt_barrier, self.lbl_barrier_unit))
+        self._length_labels.append(self.lbl_barrier_unit)
+
 
         # --- Skew coefficients group (single row like Structural page boxes) ---
         grp = QGroupBox("Skew Coefficients", self)
@@ -71,13 +81,16 @@ class LoadsPage(QWidget, ControlDataPage):
         form.addRow(grp)
 
     # ---- ControlDataPage API ----
-    def get_length_labels(self): return []
+    def get_length_labels(self):
+        return self._length_labels
+    
     def get_force_labels(self):  return []
 
     def set_state_from_model(self, model: ControlDataModel) -> None:
         l = model.loads
         self.spin_gust.setValue(l.gust_factor)
         self.spin_drag.setValue(l.drag_coefficient)
+        self.txt_barrier.setText(f"{l.crash_barrier_depth:g}")
 
         N = len(SkewCoefficients.ANGLES)
         for r in range(N):
@@ -96,10 +109,18 @@ class LoadsPage(QWidget, ControlDataPage):
         model.loads = LoadSettings(
             gust_factor=self.spin_gust.value(),
             drag_coefficient=self.spin_drag.value(),
+            crash_barrier_depth=float(self.txt_barrier.text() or 0.0),
             skew=SkewCoefficients(transverse=trans, longitudinal=longi),
         )
 
+
     def validate(self) -> tuple[bool, str]:
+        # barrier depth must be numeric (can be zero or negative if needed)
+        try:
+            float(self.txt_barrier.text())
+        except ValueError:
+            return False, "Crash Barrier Depth must be numeric."
+
         N = len(SkewCoefficients.ANGLES)
         if self.tbl.rowCount() != N:
             return False, f"Skew table must have exactly {N} rows."
@@ -115,7 +136,11 @@ class LoadsPage(QWidget, ControlDataPage):
         return True, ""
 
     def on_units_changed(self, units, prev_len: str, new_len: str, prev_force: str, new_force: str) -> None:
-        pass  # coefficients are dimensionless
+        # Convert the barrier depth when length unit changes, and update label
+        if prev_len != new_len:
+            self._convert_lineedit_length(self.txt_barrier, units, prev_len, new_len)
+        for lab in self._length_labels:
+            lab.setText(new_len)
 
     # ---- Helpers ----
     def _fit_table_height(self) -> None:
@@ -135,3 +160,19 @@ class LoadsPage(QWidget, ControlDataPage):
         self.tbl.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.tbl.setMinimumHeight(needed)
         self.tbl.setMaximumHeight(needed)
+
+    def _row(self, label_text, editor, unit_label):
+        lab = QLabel(label_text)
+        row = QWidget()
+        h = QHBoxLayout(row); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(8)
+        h.addWidget(editor, 1); h.addWidget(unit_label)
+        return lab, row
+
+    def _convert_lineedit_length(self, le: QLineEdit, units, old_u: str, new_u: str) -> None:
+        t = (le.text() or "").strip()
+        try:
+            v_old = float(t)
+        except ValueError:
+            return
+        v_new = units.convert_length_between(v_old, old_u, new_u)
+        le.setText(f"{v_new:g}")

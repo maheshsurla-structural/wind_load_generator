@@ -92,15 +92,16 @@ class SkewCoefficients:
 
 
 
-# --------------------------- Wind / aerodynamic settings (existing) ---------------------------
+# --- Wind / aerodynamic settings (existing) ---
 
 @dataclass
 class LoadSettings:
     """Wind or aerodynamic load-related coefficients."""
     gust_factor: float = 1.00
     drag_coefficient: float = 1.20
-    
+    crash_barrier_depth: float = 0.0            # <-- NEW (length)
     skew: SkewCoefficients = field(default_factory=SkewCoefficients)
+
 
 
 
@@ -175,6 +176,7 @@ class ControlDataModel:
             loads=LoadSettings(
                 gust_factor=float(loads_in.get("gust_factor", 1.00) or 1.00),
                 drag_coefficient=float(loads_in.get("drag_coefficient", 1.20) or 1.20),
+                crash_barrier_depth=float(loads_in.get("crash_barrier_depth", 0.0) or 0.0),  # <-- NEW
                 skew=SkewCoefficients(transverse=t, longitudinal=g),
             ),
             length_unit=lu,
