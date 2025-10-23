@@ -5,14 +5,16 @@ from typing import Optional
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog, QListWidget, QStackedWidget, QSplitter,
-    QHBoxLayout, QVBoxLayout, QPushButton
+    QHBoxLayout, QVBoxLayout, QPushButton, QWidget
 )
 from unit_manager import UnitAwareMixin, UnitSystem
+from unit_manager import get_unit_manager
 from .models import ControlDataModel
 from .pages.structural import StructuralPage
 from .pages.loads import LoadsPage
 from .pages.units import UnitsPage
 from .pages.wind_naming import WindNamingPage
+
 
 class ControlData(QDialog, UnitAwareMixin):
     """Entry point dialog that stacks page widgets and aggregates their state."""
@@ -24,7 +26,7 @@ class ControlData(QDialog, UnitAwareMixin):
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.resize(820, 460)
 
-        self.units = units or getattr(parent, "units", UnitSystem())
+        self.units = units or getattr(parent, "units", get_unit_manager())
         self.model = ControlDataModel(length_unit=self.units.length, force_unit=self.units.force)
 
         # --- pages (each page = single file with all its logic) ---
@@ -34,6 +36,10 @@ class ControlData(QDialog, UnitAwareMixin):
             LoadsPage(self),
             UnitsPage(self.units, self),
         ]
+
+        # Dialog-level previous units cache (single source of truth)
+        self._prev_len: str = self.units.length
+        self._prev_force: str = self.units.force
 
         self.section_list = QListWidget()
         self.section_list.addItems([p.title for p in self._pages])
@@ -68,8 +74,6 @@ class ControlData(QDialog, UnitAwareMixin):
         self.btn_cancel.clicked.connect(self.reject)
 
         # unit binding
-        self._prev_len = self.units.length
-        self._prev_force = self.units.force
         self.bind_units(self.units)  # will call update_units at least once
 
         # default to first page
@@ -78,31 +82,54 @@ class ControlData(QDialog, UnitAwareMixin):
         # initialize from current model
         self._push_model_to_pages()
 
+
+
+
     # ---------- UnitAwareMixin hook ----------
     def update_units(self, length_unit: str, force_unit: str) -> None:
+        # Use dialog-level previous units for all pages to ensure consistency.
+        prev_len, prev_force = self._prev_len, self._prev_force
+
         for p in self._pages:
-            p.on_units_changed(self.units, self._prev_len, length_unit, self._prev_force, force_unit)
-        self._prev_len = length_unit
-        self._prev_force = force_unit
+            p.on_units_changed(self.units, prev_len, length_unit, prev_force, force_unit)
+
+        # After notifying all pages, commit the new pair as "previous"
+        self._prev_len, self._prev_force = length_unit, force_unit
+
+        # Optional: also let the mixin update any label lists on *this* widget
+        super().update_units(length_unit, force_unit)
+
+
+
+
 
     # ---------- payload API ----------
     def set_payload(self, payload: dict) -> None:
         try:
             self.model = ControlDataModel.from_dict(payload)
             self._push_model_to_pages()
-            # convert structural numeric fields if payload length != current
-            if self.model.length_unit != self.units.length:
-                # simulate a unit change to trigger per-page conversion
+
+            # If payload units differ from the current UnitSystem, simulate a unit change
+            # ONCE so pages can convert their numeric fields.
+            if (self.model.length_unit != self.units.length) or (self.model.force_unit != self.units.force):
+                # Use the payload's units as "previous", convert to current dialog units.
+                prev_len, prev_force = self.model.length_unit, self.model.force_unit
                 for p in self._pages:
-                    p.on_units_changed(self.units, self.model.length_unit, self.units.length,
-                                       self.model.force_unit, self.units.force)
-            # keep model units aligned to global after load
+                    p.on_units_changed(self.units, prev_len, self.units.length, prev_force, self.units.force)
+
+                # Align the dialog-level "previous" cache to the now-current units
+                self._prev_len, self._prev_force = self.units.length, self.units.force
+
+            # Keep model units aligned to the global after load
             self.model.length_unit = self.units.length
             self.model.force_unit = self.units.force
-        except Exception as e:
+
+        except Exception:
             # keep silent UI; you can log here if desired
             # log.exception("set_payload failed: %s", e)
             pass
+
+
 
     # ---------- buttons ----------
     def _on_defaults(self):

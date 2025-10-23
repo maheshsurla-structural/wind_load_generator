@@ -118,7 +118,7 @@ class ControlDataModel:
 
     def to_dict(self) -> dict:
         return {
-            "version": 4,  # bump: wind naming simplification (removed fields)
+            "version": 5,  # bump: wind naming simplification (removed fields)
             "geometry": asdict(self.geometry),
             "naming": asdict(self.naming),   # includes nested 'wind'
             "loads": asdict(self.loads),

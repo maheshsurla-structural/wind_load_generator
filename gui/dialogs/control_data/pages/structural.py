@@ -1,7 +1,7 @@
 # gui\dialogs\control_data\pages\structural.py
 
 from __future__ import annotations
-from PySide6.QtWidgets import QWidget, QFormLayout, QLineEdit, QLabel, QGroupBox, QFormLayout, QSpinBox, QHBoxLayout
+from PySide6.QtWidgets import QWidget, QFormLayout, QLineEdit, QLabel, QGroupBox, QSpinBox, QHBoxLayout
 from PySide6.QtGui import QDoubleValidator
 from .base import ControlDataPage
 from ..models import ControlDataModel, GeometrySettings, NamingRules
@@ -23,6 +23,8 @@ class StructuralPage(QWidget, ControlDataPage):
         form.addRow(*self._row("Ground Level", self.txt_ground, self.lbl_len1))
         form.addRow(*self._row("Pier Proximity Radius", self.txt_radius, self.lbl_len2))
         self._length_labels.extend([self.lbl_len1, self.lbl_len2])
+        self.length_unit_labels = self._length_labels
+
 
         naming = QGroupBox("Naming Rules", self)
         nform = QFormLayout(naming)
@@ -86,6 +88,7 @@ class StructuralPage(QWidget, ControlDataPage):
 
     def on_units_changed(self, units, prev_len: str, new_len: str, prev_force: str, new_force: str) -> None:
         # convert the two length fields if unit changed
+        print("Structural on_units_changed:", prev_len, "->", new_len)
         if prev_len != new_len:
             self._convert_lineedit_length(self.txt_ground, units, prev_len, new_len)
             self._convert_lineedit_length(self.txt_radius, units, prev_len, new_len)
