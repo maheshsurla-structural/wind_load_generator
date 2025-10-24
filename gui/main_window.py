@@ -25,6 +25,8 @@ from gui.dialogs.control_data import ControlData
 from gui.dialogs.wind_load_input import WindLoadInput
 from gui.dialogs.pair_wind_load_cases import PairWindLoadCases
 
+from midas.resources.structural_group import StructuralGroup
+
 
 class MainWindow(QMainWindow):
 
@@ -113,18 +115,16 @@ class MainWindow(QMainWindow):
 
     def _on_generate_clicked(self) -> None:
         from core.analytical_model_classification import classify_elements
-        from midas import create_structural_group  # integration layer
 
         # --- Capture everything on the main (UI) thread ---
-        defaults = self.wind_parameters.values()                 # safe here (widget)
-        pr   = self.control_model.geometry.pier_radius           # pier radius
-        ui_len = self.units.length.upper()                       # capture UI length unit for worker
-        sa   = self.control_model.naming.suffix_above            # "_SubAbove" etc.
-        base = self.control_model.naming.pier_base_name          # "Pier" etc.
-        loads  = self.control_model.loads                        # gust, drag
-        naming = self.control_model.naming                       # names & suffixes
+        defaults = self.wind_parameters.values()
+        pr       = self.control_model.geometry.pier_radius
+        ui_len   = self.units.length.upper()
+        sa       = self.control_model.naming.suffix_above
+        base     = self.control_model.naming.pier_base_name
+        loads    = self.control_model.loads
+        naming   = self.control_model.naming
 
-        # Closure passes your parameters to the new signature
         def classify_with_params():
             return classify_elements(
                 pier_radius=pr,
@@ -137,62 +137,65 @@ class MainWindow(QMainWindow):
         worker = Worker(
             self._run_classification_task,
             classify_with_params,
-            create_structural_group,
             defaults,
             naming,
             loads,
-            ui_len, 
+            ui_len,
         )
         worker.signals.finished.connect(lambda _: self.bus.progressFinished.emit(True, "Wind data generated."))
         worker.signals.error.connect(lambda e: self.bus.progressFinished.emit(False, e))
         run_in_thread(worker)
 
 
-    def _run_classification_task(self, run_classification, create_structural_group, defaults, naming, loads, ui_length_unit):
-        """Runs off the UI thread."""
-        # Run the wrapped classifier (already parameterized on the UI thread)
+    def _run_classification_task(self, run_classification, defaults, naming, loads, ui_length_unit):
+        """Runs off the UI thread. Classifies, batches groups, one PUT to MIDAS, updates local DB."""
         result = run_classification()
 
-        # Load coefficients from Control Data
+        # Coefficients
         gust = f"{loads.gust_factor:g}"
         cd   = f"{loads.drag_coefficient:g}"
 
         # --- Compute real Structure Height (deck Z - ground), unit-safe ---
-        deck_ref   = result.get("deck_reference_height")                  # float | None (model units)
-        model_unit = (result.get("model_unit") or "FT").upper()           # e.g., 'FT', 'M', 'IN'
+        deck_ref   = result.get("deck_reference_height")
+        model_unit = (result.get("model_unit") or "FT").upper()
         ground_ui  = float(self.control_model.geometry.reference_height or 0.0)
 
         if deck_ref is not None:
-            # Convert ground from UI units -> model units (safe)
             try:
                 ground_in_model = convert_length(ground_ui, from_sym=ui_length_unit, to_sym=model_unit)
             except ValueError:
-                ground_in_model = ground_ui  # fallback if units surprise us
-
+                ground_in_model = ground_ui
             height = max(0.0, float(deck_ref) - ground_in_model)
             height_str = f"{height:g}"
         else:
             height_str = "0"
 
+        # ---- collect groups for ONE PUT
+        batch: list[tuple[str, list[int]]] = []
 
-        # ----- Deck (optional)
+        # Deck group (optional)
         deck_elements = result.get("deck_elements", {})
         if deck_elements:
-            deck_ids = list(map(int, deck_elements.keys()))
-            deck_group_name = f"{naming.deck_name} Elements"
-            create_structural_group(deck_ids, deck_group_name)
-            wind_db.add_structural_group(deck_group_name, {
-                **defaults,
-                "Structure Height": height_str,
-                "Gust Factor": gust,
-                "Drag Coefficient": cd,
-                "Member Type": "Girders",
-            })
+            deck_ids = sorted({int(i) for i in deck_elements.keys()})
+            if deck_ids:
+                deck_group_name = f"{(naming.deck_name or 'Deck').strip()} Elements"
+                batch.append((deck_group_name, deck_ids))
+                # update local DB (app-side)
+                wind_db.add_structural_group(deck_group_name, {
+                    **defaults,
+                    "Structure Height": height_str,
+                    "Gust Factor": gust,
+                    "Drag Coefficient": cd,
+                    "Member Type": "Girders",
+                })
 
-        # ----- Piers / clusters (labels already include base name & suffix_above from classifier)
-        for label, element_dict in (result.get("pier_clusters", {}) or {}).items():
-            ids = list(map(int, element_dict.keys()))
-            create_structural_group(ids, label)
+        # Pier clusters
+        for label, element_dict in result.get("pier_clusters", {}).items():
+            ids = sorted({int(i) for i in element_dict.keys()})
+            if not ids:
+                continue
+            batch.append((label, ids))
+            # update local DB (app-side)
             wind_db.add_structural_group(label, {
                 **defaults,
                 "Structure Height": height_str,
@@ -201,7 +204,15 @@ class MainWindow(QMainWindow):
                 "Member Type": "Trusses, Columns, and Arches",
             })
 
-        # Compute pressures (still off-thread) and notify UI
+        # ---- single PUT to MIDAS
+        if batch:
+            try:
+                print(f"Assigning {len(batch)} structural groups in one PUT...")
+                StructuralGroup.bulk_upsert(batch)
+            except Exception as exc:
+                raise RuntimeError(f"Failed to create/update structural groups in batch: {exc}")
+
+        # Finish: compute pressures and notify UI
         wind_db.update_wind_pressures()
         self.bus.windGroupsUpdated.emit(wind_db.get_data())
 
