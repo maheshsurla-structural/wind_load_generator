@@ -149,7 +149,15 @@ class MainWindow(QMainWindow):
 
     def _run_classification_task(self, run_classification, defaults, naming, loads, ui_length_unit):
         """Runs off the UI thread. Classifies, batches groups, one PUT to MIDAS, updates local DB."""
-        result = run_classification()
+
+        print("DEBUG: entering _run_classification_task")
+        try:
+            result = run_classification()
+        except Exception as e:
+            import traceback
+            print("DEBUG: classify_elements() raised:")
+            traceback.print_exc()
+            raise
 
         # Coefficients
         gust = f"{loads.gust_factor:g}"

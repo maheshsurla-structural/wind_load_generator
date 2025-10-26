@@ -31,14 +31,6 @@ class StructuralGroup(MapResource):
     # ------------------------------- Lookup Methods ---------------------------------
 
     @classmethod
-    def get_by_name(cls, name: str) -> Optional[Dict[str, Any]]:
-        all_groups = cls.get_all()
-        for entry in all_groups.values():
-            if entry.get("NAME") == name:
-                return entry
-        return None
-
-    @classmethod
     def get_id_by_name(cls, name: str) -> Optional[str]:
         all_groups = cls.get_all()
         for k, entry in all_groups.items():
@@ -62,6 +54,7 @@ class StructuralGroup(MapResource):
     def create(cls, name: str, e_list: Union[str, Iterable[int], Iterable[str]]) -> Dict[str, Any]:
         if not name or not name.strip():
             raise ValueError("Structural group name is required.")
+        
         e_list_norm = cls._normalize_e_list(e_list)
         if (isinstance(e_list_norm, list) and not e_list_norm) or (isinstance(e_list_norm, str) and not e_list_norm):
             raise ValueError("Element list is empty.")
@@ -79,6 +72,7 @@ class StructuralGroup(MapResource):
     def upsert(cls, name: str, e_list: Union[str, Iterable[int], Iterable[str]]) -> Dict[str, Any]:
         if not name or not name.strip():
             raise ValueError("Structural group name is required.")
+        
         e_list_norm = cls._normalize_e_list(e_list)
         if (isinstance(e_list_norm, list) and not e_list_norm) or (isinstance(e_list_norm, str) and not e_list_norm):
             raise ValueError("Element list is empty.")
@@ -146,4 +140,68 @@ class StructuralGroup(MapResource):
         if not assign:
             return {}  # nothing to do
         return cls.set_all(assign)       
-        
+
+
+    # ------------------------------- Element Access ---------------------------------
+
+    @staticmethod
+    def _to_int_list(e_list: Any) -> list[int]:
+        """
+        Normalize MIDAS E_LIST (may be list[int] or space-separated str) into list[int].
+        Returns [] for missing/empty.
+        """
+        if not e_list:
+            return []
+        if isinstance(e_list, str):
+            return [int(x) for x in e_list.split() if x.strip().isdigit()]
+        # assume iterable
+        return [int(x) for x in e_list]
+
+    @classmethod
+    def get_elements_by_name(cls, name: str) -> list[int]:
+        """
+        Return the element IDs in the group whose NAME == name.
+        [] if not found or empty.
+        """
+        entry = cls.get_by_name(name)
+        return cls._to_int_list(entry.get("E_LIST")) if entry else []
+
+    @classmethod
+    def get_elements_by_id(cls, group_id: Union[str, int]) -> list[int]:
+        """
+        Return the element IDs in the group with the given numeric key (e.g., "3").
+        [] if not found or empty.
+        """
+        entry = cls.get_all().get(str(group_id))
+        return cls._to_int_list(entry.get("E_LIST")) if entry else []
+
+
+    # @classmethod
+    # def name_to_elements(cls) -> Dict[str, list[int]]:
+    #     """
+    #     Return a mapping { group_name: [element_ids...] } for all groups.
+    #     """
+    #     out: Dict[str, list[int]] = {}
+    #     for entry in cls.get_all().values():
+    #         name = (entry.get("NAME") or "").strip()
+    #         if name:
+    #             out[name] = cls._to_int_list(entry.get("E_LIST"))
+    #     return out
+
+    # @classmethod
+    # def id_to_elements(cls) -> Dict[str, list[int]]:
+    #     """
+    #     Return a mapping { group_id: [element_ids...] } for all groups.
+    #     """
+    #     out: Dict[str, list[int]] = {}
+    #     for k, entry in cls.get_all().items():
+    #         out[str(k)] = cls._to_int_list(entry.get("E_LIST"))
+    #     return out
+
+    # @classmethod
+    # def get_by_name(cls, name: str) -> Optional[Dict[str, Any]]:
+    #     all_groups = cls.get_all()
+    #     for entry in all_groups.values():
+    #         if entry.get("NAME") == name:
+    #             return entry
+    #     return None

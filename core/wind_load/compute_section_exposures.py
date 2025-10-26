@@ -1,3 +1,5 @@
+# core/wind_load/compute_section_exposures.py
+
 import numpy as np
 import pandas as pd
 

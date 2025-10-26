@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import QApplication
 import sys
 from gui import MainWindow
-import json
+# import json
 
 # from core.wind_load.compute_section_exposures import exposures_numpy
 
@@ -27,3 +27,10 @@ if __name__ == "__main__":
 # exposures = exposures_numpy(section_properties,as_dataframe=True)
 
 # print(exposures)
+
+# from midas.resources.structural_group import StructuralGroup
+
+# Example 1: By name
+# deck_elems = StructuralGroup.get_elements_by_name("Deck Elements")
+# print(deck_elems)   # [101, 102, 103, ...]
+
