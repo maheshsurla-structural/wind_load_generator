@@ -163,8 +163,12 @@ class StructuralGroup(MapResource):
         Return the element IDs in the group whose NAME == name.
         [] if not found or empty.
         """
-        entry = cls.get_by_name(name)
-        return cls._to_int_list(entry.get("E_LIST")) if entry else []
+        all_groups = cls.get_all()
+        for entry in all_groups.values():
+            if (entry.get("NAME") or "").strip() == name:
+                return cls._to_int_list(entry.get("E_LIST"))
+        return []
+
 
     @classmethod
     def get_elements_by_id(cls, group_id: Union[str, int]) -> list[int]:

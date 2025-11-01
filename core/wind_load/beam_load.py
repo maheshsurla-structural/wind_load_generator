@@ -7,7 +7,7 @@ import pandas as pd
 from midas.resources.structural_group import StructuralGroup
 from core.wind_load.compute_section_exposures import compute_section_exposures
 from midas.resources.element_beam_load import BeamLoadItem, BeamLoadResource
-
+from midas import elements, get_section_properties
 
 # -------------------------------------------------
 # PROJECT HOOKS (you still need to implement these)
@@ -15,30 +15,31 @@ from midas.resources.element_beam_load import BeamLoadItem, BeamLoadResource
 
 def _get_element_to_section_map(element_ids: List[int]) -> Dict[int, int]:
     """
-    MUST BE IMPLEMENTED BY YOU.
+    Return {element_id: section_id} for each element in element_ids.
 
-    Return { element_id: section_id } for each element in element_ids.
-
-    We need this because wind load is applied per element, but the exposure
-    depth is computed per section property.
+    Uses /db/ELEM via midas.elements.get_all().
+    Each element dict must contain the key "SECT" (or equivalent)
+    referring to its assigned section/property ID.
+    Elements missing that key are skipped.
     """
-    raise NotImplementedError
+    out: Dict[int, int] = {}
+    all_elem_data = elements.get_all()  # /db/ELEM dump
 
+    for eid in element_ids:
+        edata = all_elem_data.get(str(eid))
+        if not edata:
+            continue
 
-def _get_all_section_properties_raw() -> List[List[Any]]:
-    """
-    MUST BE IMPLEMENTED BY YOU.
+        sect_id = edata.get("SECT")  # <-- adjust key name if different in your model
+        if sect_id is None:
+            continue
 
-    Return the raw section properties table (the thing you already pass into
-    compute_section_exposures). Each row must satisfy:
+        try:
+            out[int(eid)] = int(sect_id)
+        except (TypeError, ValueError):
+            continue
 
-        row[1]  = section/property ID
-        row[11] = LEFT
-        row[12] = RIGHT
-        row[13] = TOP
-        row[14] = BOTTOM
-    """
-    raise NotImplementedError
+    return out
 
 
 # -------------------------------------------------
@@ -79,13 +80,22 @@ def build_beam_load_plan_for_group(
     elem_to_sect = _get_element_to_section_map(element_ids)
 
     # 3. compute exposure depths for ALL sections
-    section_props_raw = _get_all_section_properties_raw()
+    section_props_raw = get_section_properties()
+    
     exposures_df = compute_section_exposures(
         section_props_raw,
         extra_exposure_y_default=extra_exposure_y_default,
         extra_exposure_y_by_id=extra_exposure_y_by_id,
         as_dataframe=True,
     )
+
+
+
+    # make sure index is int so it matches elem_to_sect values
+    try:
+        exposures_df.index = exposures_df.index.astype(int)
+    except ValueError:
+        pass  # fallback if some IDs aren't numeric
 
     # choose projection axis
     depth_col = "exposure_z" if exposure_axis.lower() == "z" else "exposure_y"
