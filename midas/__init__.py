@@ -4,20 +4,22 @@ from .midas_api import MidasAPI
 from .resources.units import Units
 from .resources.node import Node
 from .resources.element import Element
-from .resources.section import Section  # NEW
+from .resources.section import Section
+from .resources.static_load_case import StaticLoadCase  
 
 # helpers / other modules
 from .material import get_materials
-from .resources.section import get_section_properties  # moved from old_section
+from .resources.section import get_section_properties 
 from .view_select import ViewSelected
 from .create_structural_group import create_structural_group
 
 # public aliases (friendly plural-ish handles)
 api = MidasAPI
 units = Units
-nodes = Node            # alias singular class -> plural-y name
-elements = Element      # alias singular class -> plural-y name
-sections = Section      # NEW alias, same pattern
+nodes = Node            
+elements = Element      
+sections = Section      
+static_load_cases = StaticLoadCase  
 
 __all__ = [
     # aliases
@@ -26,6 +28,7 @@ __all__ = [
     "nodes",
     "elements",
     "sections",
+    "static_load_cases",   
 
     # core classes
     "MidasAPI",
@@ -33,6 +36,7 @@ __all__ = [
     "Node",
     "Element",
     "Section",
+    "StaticLoadCase",       
 
     # helpers / utilities
     "get_materials",
