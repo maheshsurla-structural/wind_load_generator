@@ -23,7 +23,7 @@ from gui.dialogs.control_data.models import ControlDataModel
 from gui.dialogs.control_data import ControlData
 
 from gui.dialogs.wind_load_input import WindLoadInput
-from gui.dialogs.pair_wind_load_cases import PairWindLoadCases
+from gui.dialogs.wind_load_cases import WindLoadCases
 
 from midas.resources.structural_group import StructuralGroup
 
@@ -254,7 +254,7 @@ class MainWindow(QMainWindow):
     def open_pair_wind_load_cases(self) -> None:
         naming = getattr(getattr(self, "control_model", None), "naming", None)
         naming = getattr(naming, "wind", None)
-        dlg = PairWindLoadCases(self, naming=naming)
+        dlg = WindLoadCases(self, naming=naming)
         dlg.exec()
 
 

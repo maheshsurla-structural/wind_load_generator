@@ -6,16 +6,16 @@
 
 # import midas as Midas
 
-# from PySide6.QtWidgets import QApplication
-# import sys
-# from gui import MainWindow
+from PySide6.QtWidgets import QApplication
+import sys
+from gui import MainWindow
 
-# if __name__ == "__main__":
-#     app = QApplication(sys.argv)
-#     window = MainWindow()
-#     window.resize(900, 500)
-#     window.show()
-#     sys.exit(app.exec())
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.resize(900, 500)
+    window.show()
+    sys.exit(app.exec())
 
 
 # # if __name__ == "__main__":
