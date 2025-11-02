@@ -31,6 +31,10 @@ from PySide6.QtWidgets import (
 from wind_database import wind_db, LOAD_CASES
 from gui.dialogs.control_data.models import WindLoadNamingSettings
 
+from midas.resources.static_load_case import StaticLoadCase
+from midas.resources.load_group import LoadGroup
+
+
 log = logging.getLogger(__name__)
 
 
@@ -508,24 +512,92 @@ class WindLoadCases(QDialog):
         self.ws_visible_cases = visible
         self._rebuild_models()
 
+    def _ensure_midas_cases_and_groups_bulk(self, assignments: Sequence[LoadCaseAssignment]) -> None:
+        """
+        Collect all distinct case names from the table and send them to MIDAS in
+        as few PUTs as possible.
+
+        - WS rows  -> TYPE = "W"
+        - WL rows  -> TYPE = "WL"
+
+        Uses:
+            StaticLoadCase.bulk_upsert([(name, type, desc), ...])
+            LoadGroup.bulk_upsert([name1, name2, ...])
+        """
+        # name -> type
+        name_to_type: dict[str, str] = {}
+
+        for a in assignments:
+            name = (a.value or "").strip()
+            if not name:
+                continue
+
+            # decide type once
+            if (a.case or "").strip().upper() == "WL":
+                load_type = "WL"
+            else:
+                load_type = "W"
+
+            # if the same name shows up with different guessed types,
+            # keep the first one (or you can make a tiny resolver here)
+            if name not in name_to_type:
+                name_to_type[name] = load_type
+
+        if not name_to_type:
+            return
+
+        # ---- 1) bulk static load cases
+        static_payload = [
+            # (name, type, desc)
+            (name, load_type, None)
+            for name, load_type in name_to_type.items()
+        ]
+        try:
+            StaticLoadCase.bulk_upsert(static_payload)
+        except Exception as exc:
+            log.warning("Bulk upsert for static load cases failed: %s", exc)
+
+        # ---- 2) bulk load groups (only names)
+        try:
+            LoadGroup.bulk_upsert(sorted(name_to_type.keys()))
+        except Exception as exc:
+            log.warning("Bulk upsert for load groups failed: %s", exc)
+
     # ----- persistence ------------------------------------------------------
 
     def _on_apply(self) -> None:
         try:
             ws_assignments = self.ws_model.to_assignments()
             wl_assignments = self.wl_model.to_assignments()
+
             model = PairWindLoadModel(
                 ws_cases=ws_assignments,
                 wl_cases=wl_assignments,
             )
 
-            wind_db.ws_cases = pd.DataFrame([asdict(a) for a in ws_assignments])
-            wind_db.wl_cases = pd.DataFrame([asdict(a) for a in wl_assignments])
+            # normalize column names to what _load_from_db expects
+            ws_df = pd.DataFrame([asdict(a) for a in ws_assignments]).rename(
+                columns={"case": "Case", "angle": "Angle", "value": "Value"}
+            )
+            wl_df = pd.DataFrame([asdict(a) for a in wl_assignments]).rename(
+                columns={"case": "Case", "angle": "Angle", "value": "Value"}
+            )
+
+            wind_db.ws_cases = ws_df
+            wind_db.wl_cases = wl_df
             wind_db.update_wind_pressures()
+
+            # bulk MIDAS push
+            try:
+                all_assignments = [*ws_assignments, *wl_assignments]
+                self._ensure_midas_cases_and_groups_bulk(all_assignments)
+            except Exception as midas_exc:
+                log.exception("Bulk MIDAS update failed: %s", midas_exc)
 
             self.dataChanged.emit(model)
             QMessageBox.information(self, "Success", "Wind load pairs updated successfully.")
             self.accept()
+
         except Exception as exc:
             log.exception("PairWindLoadCases: apply failed: %s", exc)
             QMessageBox.critical(self, "Error", str(exc))
@@ -546,6 +618,12 @@ class WindLoadCases(QDialog):
 
         ws_df: pd.DataFrame = data.get("WS Cases", pd.DataFrame())
         wl_df: pd.DataFrame = data.get("WL Cases", pd.DataFrame())
+
+        # normalize old saves (lowercase) -> new names
+        if not ws_df.empty:
+            ws_df = ws_df.rename(columns={"case": "Case", "angle": "Angle", "value": "Value"})
+        if not wl_df.empty:
+            wl_df = wl_df.rename(columns={"case": "Case", "angle": "Angle", "value": "Value"})
         if ws_df.empty and wl_df.empty:
             return
 
