@@ -56,6 +56,7 @@ class LoadsPage(QWidget, ControlDataPage):
 
         self.tbl_skew = QTableWidget(len(SkewCoefficients.ANGLES), 3, self)
         self.tbl_skew.setHorizontalHeaderLabels(["Skew Angle (deg)", "Transverse", "Longitudinal"])
+        self.tbl_skew.horizontalHeader().setStretchLastSection(True)
         self.tbl_skew.verticalHeader().setVisible(False)
         self.tbl_skew.setAlternatingRowColors(True)
         self.tbl_skew.setWordWrap(False)
@@ -96,6 +97,7 @@ class LoadsPage(QWidget, ControlDataPage):
         
         self.tbl_live = QTableWidget(len(WindLiveLoadCoefficients.ANGLES), 3, self)
         self.tbl_live.setHorizontalHeaderLabels(["Skew Angle (deg)", "Transverse (klf)", "Longitudinal (klf)"])
+        self.tbl_live.horizontalHeader().setStretchLastSection(True)
         self.tbl_live.verticalHeader().setVisible(False)
         self.tbl_live.setAlternatingRowColors(True)
         self.tbl_live.setWordWrap(False)

@@ -60,7 +60,7 @@ class ConfigManager:
 
     def load_control_data(self) -> dict[str, Any]:
         default = {
-            "version": 5,
+            "version": 6,
             "geometry": {"reference_height": 0.0, "pier_radius": 10.0},
             "naming": {
                 "deck_name": "Deck",
@@ -85,13 +85,17 @@ class ConfigManager:
                     "transverse":  [1.000, 0.880, 0.820, 0.660, 0.340],
                     "longitudinal": [0.000, 0.120, 0.240, 0.320, 0.380],
                 },
+                "wind_live": {
+                    "transverse":  [0.100, 0.088, 0.082, 0.066, 0.034],
+                    "longitudinal": [0.000, 0.012, 0.024, 0.032, 0.038],
+                },                
             },
             "units": {"length": "FT", "force": "KIPS"},
         }
         return self.load(
             "control_data.json",
             default=default,
-            version=5,
+            version=6,
             schema_name="control_data.schema.json",
             migrate=self._migrate_control_data,
         )
@@ -140,6 +144,11 @@ class ConfigManager:
             skew_in = {}
         loads["skew"] = self._coerce_skew_arrays(skew_in)
 
+        # ---- Ensure loads.wind_live is present and valid (5 values each) ----
+        wl_in = loads.get("wind_live", {})
+        if not isinstance(wl_in, dict):
+            wl_in = {}
+        loads["wind_live"] = self._coerce_wind_live_arrays(wl_in)
 
         # ---- Ensure crash_barrier_depth exists and is a number ----
         try:
@@ -149,7 +158,7 @@ class ConfigManager:
 
         # ---- Ensure version ----
         if "version" not in payload:
-            payload["version"] = 5
+            payload["version"] = 6
 
         # ---- Save atomically with backup ----
         self.save("control_data.json", payload)
@@ -305,6 +314,32 @@ class ConfigManager:
         return {"transverse": t, "longitudinal": g}
 
 
+    def _coerce_wind_live_arrays(self, wl_in: dict) -> dict:
+        """
+        Ensure wind_live has 5 floats for transverse/longitudinal (0,15,30,45,60).
+        """
+        defaults_t = [0.100, 0.088, 0.082, 0.066, 0.034]
+        defaults_l = [0.000, 0.012, 0.024, 0.032, 0.038]
+        N = 5
+
+        def _as_float_list(v, fallback):
+            if isinstance(v, (list, tuple)):
+                out = []
+                for x in v:
+                    try:
+                        out.append(float(x))
+                    except Exception:
+                        out.append(None)
+                out = (out[:N] + [None] * N)[:N]
+                return [out[i] if out[i] is not None else fallback[i] for i in range(N)]
+            return fallback
+
+        t = _as_float_list(wl_in.get("transverse"), defaults_t)
+        g = _as_float_list(wl_in.get("longitudinal"), defaults_l)
+        return {"transverse": t, "longitudinal": g}
+
+
+
 
     # ------------- migrations -------------
 
@@ -398,6 +433,10 @@ class ConfigManager:
         if not isinstance(skew_in, dict):
             skew_in = {}
         l["skew"] = self._coerce_skew_arrays(skew_in)
+
+        # ---- NEW in v6: wind load components on live load
+        wl_in = l.get("wind_live") if isinstance(l.get("wind_live"), dict) else {}
+        l["wind_live"] = self._coerce_wind_live_arrays(wl_in)
 
 
         # ======================================================================
