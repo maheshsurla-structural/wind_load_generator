@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QDoubleValidator
 
 from .base import ControlDataPage
-from ..models import ControlDataModel, LoadSettings, SkewCoefficients
+from ..models import ControlDataModel, LoadSettings, SkewCoefficients, WindLiveLoadCoefficients
 
 
 class LoadsPage(QWidget, ControlDataPage):
@@ -50,35 +50,86 @@ class LoadsPage(QWidget, ControlDataPage):
 
 
         # --- Skew coefficients group (single row like Structural page boxes) ---
-        grp = QGroupBox("Skew Coefficients", self)
-        gl = QVBoxLayout(grp)
-        gl.setContentsMargins(9, 9, 9, 9)  # default groupbox margins
+        grp_skew = QGroupBox("Skew Coefficients", self)
+        gl_skew = QVBoxLayout(grp_skew)
+        gl_skew.setContentsMargins(9, 9, 9, 9)  # default groupbox margins
 
-        self.tbl = QTableWidget(len(SkewCoefficients.ANGLES), 3, self)
-        self.tbl.setHorizontalHeaderLabels(["Skew Angle (deg)", "Transverse", "Longitudinal"])
-        self.tbl.verticalHeader().setVisible(False)
-        self.tbl.setAlternatingRowColors(True)
-        self.tbl.setWordWrap(False)
+        self.tbl_skew = QTableWidget(len(SkewCoefficients.ANGLES), 3, self)
+        self.tbl_skew.setHorizontalHeaderLabels(["Skew Angle (deg)", "Transverse", "Longitudinal"])
+        self.tbl_skew.verticalHeader().setVisible(False)
+        self.tbl_skew.setAlternatingRowColors(True)
+        self.tbl_skew.setWordWrap(False)
 
         # Sizing: first column stretches; coefficients size to contents
-        hh = self.tbl.horizontalHeader()
-        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hh_skew = self.tbl_skew.horizontalHeader()
+        hh_skew.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+        hh_skew.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hh_skew.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        hh_skew.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
 
         # Populate rows
         for r, ang in enumerate(SkewCoefficients.ANGLES):
             it_ang = QTableWidgetItem(str(ang))
-            it_ang.setFlags(it_ang.flags() & ~Qt.ItemFlag.ItemIsEditable)  # read-only angle
-            self.tbl.setItem(r, 0, it_ang)
-            self.tbl.setItem(r, 1, QTableWidgetItem("1.000"))
-            self.tbl.setItem(r, 2, QTableWidgetItem("0.000"))
+            it_ang.setFlags(it_ang.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            it_ang.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.tbl_skew.setItem(r, 0, it_ang)
+
+            it_t = QTableWidgetItem("1.000")
+            it_t.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.tbl_skew.setItem(r, 1, it_t)
+
+            it_l = QTableWidgetItem("0.000")
+            it_l.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.tbl_skew.setItem(r, 2, it_l)
+
 
         # Fit to contents then lock vertical size so the group hugs the table
-        self._fit_table_height()
+        self._fit_table_height(self.tbl_skew)
 
-        gl.addWidget(self.tbl)
-        form.addRow(grp)
+        gl_skew.addWidget(self.tbl_skew)
+        form.addRow(grp_skew)
+
+
+        grp_live = QGroupBox("Wind Load Components on Live Load", self)
+        gl_live = QVBoxLayout(grp_live)
+        gl_live.setContentsMargins(9, 9, 9, 9)  # default groupbox margins
+        
+        self.tbl_live = QTableWidget(len(WindLiveLoadCoefficients.ANGLES), 3, self)
+        self.tbl_live.setHorizontalHeaderLabels(["Skew Angle (deg)", "Transverse (klf)", "Longitudinal (klf)"])
+        self.tbl_live.verticalHeader().setVisible(False)
+        self.tbl_live.setAlternatingRowColors(True)
+        self.tbl_live.setWordWrap(False)
+
+
+        # Sizing: first column stretches; coefficients size to contents
+        hh_live = self.tbl_live.horizontalHeader()
+        hh_live.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+        hh_live.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hh_live.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        hh_live.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+
+        # Populate rows
+        defaults_live = WindLiveLoadCoefficients()
+        for r, ang in enumerate(WindLiveLoadCoefficients.ANGLES):
+            it_ang = QTableWidgetItem(str(ang))
+            it_ang.setFlags(it_ang.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            it_ang.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.tbl_live.setItem(r, 0, it_ang)
+
+            it_t = QTableWidgetItem(f"{defaults_live.transverse[r]:.3f}")
+            it_t.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.tbl_live.setItem(r, 1, it_t)
+
+            it_l = QTableWidgetItem(f"{defaults_live.longitudinal[r]:.3f}")
+            it_l.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.tbl_live.setItem(r, 2, it_l)
+
+
+        self._fit_table_height(self.tbl_live)
+        gl_live.addWidget(self.tbl_live)
+        form.addRow(grp_live)
+
+
 
     # ---- ControlDataPage API ----
     def get_length_labels(self):
@@ -92,48 +143,86 @@ class LoadsPage(QWidget, ControlDataPage):
         self.spin_drag.setValue(l.drag_coefficient)
         self.txt_barrier.setText(f"{l.crash_barrier_depth:g}")
 
+        # skew
         N = len(SkewCoefficients.ANGLES)
         for r in range(N):
-            self.tbl.item(r, 1).setText(f"{l.skew.transverse[r]:.3f}")
-            self.tbl.item(r, 2).setText(f"{l.skew.longitudinal[r]:.3f}")
+            self.tbl_skew.item(r, 1).setText(f"{l.skew.transverse[r]:.3f}")
+            self.tbl_skew.item(r, 2).setText(f"{l.skew.longitudinal[r]:.3f}")
+        self._fit_table_height(self.tbl_skew)
 
-        # Recompute in case font/metrics or values changed row heights
-        self._fit_table_height()
+        # wind-on-live
+        M = len(WindLiveLoadCoefficients.ANGLES)
+        for r in range(M):
+            self.tbl_live.item(r, 1).setText(f"{l.wind_live.transverse[r]:.3f}")
+            self.tbl_live.item(r, 2).setText(f"{l.wind_live.longitudinal[r]:.3f}")
+        self._fit_table_height(self.tbl_live)
+
 
     def apply_to_model(self, model: ControlDataModel) -> None:
+        # skew
         N = len(SkewCoefficients.ANGLES)
-        trans, longi = [], []
+        trans_skew, longi_skew = [], []
         for r in range(N):
-            trans.append(float(self.tbl.item(r, 1).text()))
-            longi.append(float(self.tbl.item(r, 2).text()))
+            trans_skew.append(float(self.tbl_skew.item(r, 1).text()))
+            longi_skew.append(float(self.tbl_skew.item(r, 2).text()))
+
+        # wind-on-live
+        M = len(WindLiveLoadCoefficients.ANGLES)
+        trans_live, longi_live = [], []
+        for r in range(M):
+            trans_live.append(float(self.tbl_live.item(r, 1).text()))
+            longi_live.append(float(self.tbl_live.item(r, 2).text()))
+
         model.loads = LoadSettings(
             gust_factor=self.spin_gust.value(),
             drag_coefficient=self.spin_drag.value(),
             crash_barrier_depth=float(self.txt_barrier.text() or 0.0),
-            skew=SkewCoefficients(transverse=trans, longitudinal=longi),
+            skew=SkewCoefficients(transverse=trans_skew, longitudinal=longi_skew),
+            wind_live=WindLiveLoadCoefficients(
+                transverse=trans_live,
+                longitudinal=longi_live,
+            ),
         )
 
 
+
     def validate(self) -> tuple[bool, str]:
-        # barrier depth must be numeric (can be zero or negative if needed)
+        # barrier
         try:
             float(self.txt_barrier.text())
         except ValueError:
             return False, "Crash Barrier Depth must be numeric."
 
+        # skew
         N = len(SkewCoefficients.ANGLES)
-        if self.tbl.rowCount() != N:
+        if self.tbl_skew.rowCount() != N:
             return False, f"Skew table must have exactly {N} rows."
         for r in range(N):
             for c in (1, 2):
-                it = self.tbl.item(r, c)
+                it = self.tbl_skew.item(r, c)
                 if it is None or (it.text() or "").strip() == "":
                     return False, "Please fill all skew coefficients."
                 try:
                     float(it.text())
                 except ValueError:
                     return False, "Skew coefficients must be numbers."
+
+        # wind-on-live
+        M = len(WindLiveLoadCoefficients.ANGLES)
+        if self.tbl_live.rowCount() != M:
+            return False, f"Wind live table must have exactly {M} rows."
+        for r in range(M):
+            for c in (1, 2):
+                it = self.tbl_live.item(r, c)
+                if it is None or (it.text() or "").strip() == "":
+                    return False, "Please fill all wind-live coefficients."
+                try:
+                    float(it.text())
+                except ValueError:
+                    return False, "Wind-live coefficients must be numbers."
+
         return True, ""
+
 
     def on_units_changed(self, units, prev_len: str, new_len: str, prev_force: str, new_force: str) -> None:
         # Convert the barrier depth when length unit changes, and update label
@@ -143,23 +232,21 @@ class LoadsPage(QWidget, ControlDataPage):
             lab.setText(new_len)
 
     # ---- Helpers ----
-    def _fit_table_height(self) -> None:
-        """Resize rows to contents and clamp table height so it doesn't expand."""
-        self.tbl.resizeColumnsToContents()
-        self.tbl.resizeRowsToContents()
+    def _fit_table_height(self, tbl: QTableWidget) -> None:
+        tbl.resizeColumnsToContents()
+        tbl.resizeRowsToContents()
 
-        header_h = self.tbl.horizontalHeader().height()
-        rows_h = self.tbl.verticalHeader().length()  # total height of all rows
-        frame = 2 * self.tbl.frameWidth()
+        header_h = tbl.horizontalHeader().height()
+        rows_h = tbl.verticalHeader().length()
+        frame = 2 * tbl.frameWidth()
+        hbar_h = tbl.horizontalScrollBar().sizeHint().height() if tbl.horizontalScrollBar().isVisible() else 0
 
-        # Include horizontal scrollbar height only if it will appear
-        hbar_h = self.tbl.horizontalScrollBar().sizeHint().height() if self.tbl.horizontalScrollBar().isVisible() else 0
+        needed = int(header_h + rows_h + frame + hbar_h + 1)
 
-        needed = int(header_h + rows_h + frame + hbar_h + 1)  # +1 for rounding safety
+        tbl.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        tbl.setMinimumHeight(needed)
+        tbl.setMaximumHeight(needed)
 
-        self.tbl.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        self.tbl.setMinimumHeight(needed)
-        self.tbl.setMaximumHeight(needed)
 
     def _row(self, label_text, editor, unit_label):
         lab = QLabel(label_text)

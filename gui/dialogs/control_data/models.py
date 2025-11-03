@@ -90,6 +90,28 @@ class SkewCoefficients:
         # convenience accessor for UIs
         return list(self.ANGLES)
 
+@dataclass
+class WindLiveLoadCoefficients:
+    """Table 3.8.1.3-1 — Wind Load Components on Live Load"""
+    ANGLES: ClassVar[tuple[int, ...]] = (0, 15, 30, 45, 60)
+
+    transverse: List[float] = field(
+        default_factory=lambda: [0.100, 0.088, 0.082, 0.066, 0.034]
+    )
+    longitudinal: List[float] = field(
+        default_factory=lambda: [0.000, 0.012, 0.024, 0.032, 0.038]
+    )
+
+    def __post_init__(self):
+        n = len(self.ANGLES)
+        if len(self.transverse) != n or len(self.longitudinal) != n:
+            raise ValueError(
+                f"WindLiveLoadCoefficients must have {n} entries for transverse and longitudinal."
+            )
+
+    @property
+    def angles(self) -> List[int]:
+        return list(self.ANGLES)
 
 
 # --- Wind / aerodynamic settings (existing) ---
@@ -101,8 +123,7 @@ class LoadSettings:
     drag_coefficient: float = 1.20
     crash_barrier_depth: float = 0.0            # <-- NEW (length)
     skew: SkewCoefficients = field(default_factory=SkewCoefficients)
-
-
+    wind_live: WindLiveLoadCoefficients = field(default_factory=WindLiveLoadCoefficients)
 
 
 # --------------------------- Master control model (existing API retained) ---------------------------
@@ -118,7 +139,7 @@ class ControlDataModel:
 
     def to_dict(self) -> dict:
         return {
-            "version": 5,  # bump: wind naming simplification (removed fields)
+            "version": 6,  # bump: wind naming simplification + wind live-load table
             "geometry": asdict(self.geometry),
             "naming": asdict(self.naming),   # includes nested 'wind'
             "loads": asdict(self.loads),
@@ -139,18 +160,28 @@ class ControlDataModel:
         wind_in = naming_in.get("wind", {}) or {}
 
         loads_in = data.get("loads", {}) or {}
-        skew_in = loads_in.get("skew", {}) or {}
 
+        skew_in = loads_in.get("skew", {}) or {}
         defaults_t = [1.000, 0.880, 0.820, 0.660, 0.340]
         defaults_l = [0.000, 0.120, 0.240, 0.320, 0.380]
         N = len(SkewCoefficients.ANGLES)
-
         t_in = list(skew_in.get("transverse", defaults_t) or defaults_t)
         g_in = list(skew_in.get("longitudinal", defaults_l) or defaults_l)
-
         # enforce completeness; if not exact length, use defaults
         t = t_in if len(t_in) == N else defaults_t
         g = g_in if len(g_in) == N else defaults_l
+
+        # wind load on live load (new table)
+        wind_live_in = loads_in.get("wind_live", {}) or {}
+        wl_defaults_t = [0.100, 0.088, 0.082, 0.066, 0.034]
+        wl_defaults_l = [0.000, 0.012, 0.024, 0.032, 0.038]
+        M = len(WindLiveLoadCoefficients.ANGLES)
+
+        wl_t_in = list(wind_live_in.get("transverse", wl_defaults_t) or wl_defaults_t)
+        wl_l_in = list(wind_live_in.get("longitudinal", wl_defaults_l) or wl_defaults_l)
+
+        wl_t = wl_t_in if len(wl_t_in) == M else wl_defaults_t
+        wl_l = wl_l_in if len(wl_l_in) == M else wl_defaults_l
 
         return ControlDataModel(
             geometry=GeometrySettings(**(data.get("geometry", {}) or {})),
@@ -176,9 +207,14 @@ class ControlDataModel:
             loads=LoadSettings(
                 gust_factor=float(loads_in.get("gust_factor", 1.00) or 1.00),
                 drag_coefficient=float(loads_in.get("drag_coefficient", 1.20) or 1.20),
-                crash_barrier_depth=float(loads_in.get("crash_barrier_depth", 0.0) or 0.0),  # <-- NEW
+                crash_barrier_depth=float(loads_in.get("crash_barrier_depth", 0.0) or 0.0),
                 skew=SkewCoefficients(transverse=t, longitudinal=g),
+                wind_live=WindLiveLoadCoefficients(
+                    transverse=wl_t,
+                    longitudinal=wl_l,
+                ),
             ),
+
             length_unit=lu,
             force_unit=fu,
         )
