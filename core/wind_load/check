@@ -1,0 +1,113 @@
+# core/wind_load/live_wind_loads.py
+from __future__ import annotations
+import math
+from typing import List, Tuple
+import pandas as pd
+
+from core.wind_load.beam_load import build_beam_load_plan_for_group
+from midas.resources.element_beam_load import BeamLoadItem, BeamLoadResource
+
+
+def apply_live_wind_loads_to_group(
+    group_name: str,
+    components_df: pd.DataFrame,
+    *,
+    height_above_deck_ft: float = 6.0,
+) -> None:
+    """
+    Applies the live-wind components (transverse + longitudinal)
+    to a given structural group in MIDAS.
+
+    components_df must have:
+        ['load_case', 'load_group', 'angle', 'transverse', 'longitudinal']
+    """
+
+    if components_df is None or components_df.empty:
+        print(f"[apply_live_wind_loads_to_group] No data to assign for {group_name}")
+        return
+
+    all_specs: List[Tuple[int, BeamLoadItem]] = []
+    next_id = 1  # global ID counter across ALL loads
+
+    for _, row in components_df.iterrows():
+        lcname = str(row["load_case"])
+        lgname = str(row.get("load_group") or lcname)
+        t_load = float(row["transverse"])
+        l_load = float(row["longitudinal"])
+
+        print(
+            f"→ Planning loads for {lcname} (group '{lgname}') on {group_name}: "
+            f"Transverse={t_load:.3f}, Longitudinal={l_load:.3f}"
+        )
+
+        # --- 1) Transverse (local Y) ---
+        plan_T = build_beam_load_plan_for_group(
+            group_name=group_name,
+            load_case_name=lcname,
+            pressure=t_load,
+            extra_exposure_y_default=height_above_deck_ft,
+            exposure_axis="y",
+            udl_direction="LY",
+            load_group_name=lgname,
+        )
+
+        # --- 2) Longitudinal (local X) ---
+        plan_L = build_beam_load_plan_for_group(
+            group_name=group_name,
+            load_case_name=lcname,
+            pressure=l_load,
+            extra_exposure_y_default=height_above_deck_ft,
+            exposure_axis="y",     # still y for exposure depth
+            udl_direction="LX",
+            load_group_name=lgname,
+        )
+
+        combined = pd.concat([plan_T, plan_L], ignore_index=True)
+
+        for _, r in combined.iterrows():
+            element_id = int(r["element_id"])
+            q = float(r["line_load"])
+
+            # --- guard against bad / zero values ---
+            if not math.isfinite(q):
+                print(
+                    f"[WARN] Skipping non-finite load for element {element_id}, "
+                    f"case={r['load_case']}, dir={r['load_direction']}, "
+                    f"line_load={q}"
+                )
+                continue
+
+            if abs(q) < 1e-9:
+                # 0 (or almost 0) → don't send a meaningless load to MIDAS
+                continue
+
+            lc = str(r["load_case"])
+            lg = str(r["load_group"])
+            direction = str(r["load_direction"])
+
+            item = BeamLoadItem(
+                ID=next_id,         # unique across all load cases & dirs
+                LCNAME=lc,
+                GROUP_NAME=lg,
+                CMD="BEAM",
+                TYPE="UNILOAD",
+                DIRECTION=direction,
+                USE_PROJECTION=False,
+                USE_ECCEN=False,
+                D=[0, 1, 0, 0],
+                P=[q, q, 0, 0],
+            )
+            all_specs.append((element_id, item))
+            next_id += 1
+
+    if not all_specs:
+        print(f"[apply_live_wind_loads_to_group] No specs generated for {group_name}")
+        return
+
+    # Single PUT with all loads
+    BeamLoadResource.create_from_specs(all_specs)
+
+    print(
+        f"[apply_live_wind_loads_to_group] Finished assigning "
+        f"{len(components_df)} load cases ({len(all_specs)} beam loads) to '{group_name}'"
+    )

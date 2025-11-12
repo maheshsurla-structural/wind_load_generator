@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QHeaderView,
     QCheckBox,
+    QAbstractItemView,
 )
 
 from wind_database import wind_db, LOAD_CASES
@@ -187,11 +188,9 @@ class WindLoadTableModel(QAbstractTableModel):
     def flags(self, index: QModelIndex):  # type: ignore[override]
         if not index.isValid():
             return Qt.NoItemFlags
+        # All cells read-only
+        return Qt.ItemIsEnabled | Qt.ItemIsSelectable
 
-        base_flags = Qt.ItemIsEnabled | Qt.ItemIsSelectable
-        if self.show_case_column and index.column() == 0:
-            return base_flags
-        return base_flags | Qt.ItemIsEditable
 
     def headerData(self, section: int, orientation, role=Qt.DisplayRole):  # type: ignore[override]
         if role != Qt.DisplayRole or orientation != Qt.Horizontal:
@@ -238,19 +237,30 @@ class WindLoadTableModel(QAbstractTableModel):
     def to_assignments(self) -> List[LoadCaseAssignment]:
         out: List[LoadCaseAssignment] = []
         for r, case in enumerate(self.load_cases):
-            # WL table has no case column -> use table title
             case_name = case if self.show_case_column else self.title
             for c, angle in enumerate(self.angles):
-                val = (self._cells[r][c] or "").strip()
-                if val:
+                raw = (self._cells[r][c] or "").strip()
+                if not raw:
+                    continue
+
+                # split by lines/semicolons/commas; keep clean names
+                parts = []
+                for chunk in raw.splitlines():
+                    for sub in chunk.replace(";", "\n").replace(",", "\n").splitlines():
+                        name = sub.strip()
+                        if name:
+                            parts.append(name)
+
+                for name in parts:
                     out.append(
                         LoadCaseAssignment(
                             case=case_name,
                             angle=angle,
-                            value=val,
+                            value=name,
                         )
                     )
         return out
+
 
 
 # ---------------------------------------------------------------------------
@@ -274,10 +284,13 @@ class WindLoadCases(QDialog):
         self.ws_visible_cases: List[str] = LOAD_CASES[:]   # rows actually shown
 
         self._angle_spinners: List[QComboBox] = []
-        self._num_angles: int = 3
+        self._num_angles: int = 5
 
         self.ws_model: WindLoadTableModel
         self.wl_model: WindLoadTableModel
+
+        # --- quadrant checkboxes (Q1–Q4) ---
+        self._quad_checks: Dict[int, QCheckBox] = {}  # {1: cbQ1, 2: cbQ2, ...}
 
         self._build_ui()
         self._load_from_db()
@@ -312,8 +325,9 @@ class WindLoadCases(QDialog):
 
         self.ws_group = self._build_ws_group(self.ws_model)
         self.wl_group = self._build_table_group("Wind on Live Load (WL)", self.wl_model)
-        root.addWidget(self.ws_group)
-        root.addWidget(self.wl_group)
+        root.addWidget(self.ws_group, stretch=5)
+        root.addWidget(self.wl_group, stretch=2)
+
 
         # buttons
         btn_row = QHBoxLayout()
@@ -347,6 +361,23 @@ class WindLoadCases(QDialog):
             cb.currentTextChanged.connect(self._on_angle_text_changed)
             self._angle_spinners.append(cb)
             lay.addWidget(cb)
+
+        # --- Quadrants row ---
+        lay.addSpacing(24)
+        lay.addWidget(QLabel("Quadrants:"))
+        for q in (1, 2, 3, 4):
+            cb = QCheckBox(f"Q{q}")
+            cb.setChecked(q == 1)  # default Q1
+            cb.toggled.connect(self._on_quadrants_changed)
+            self._quad_checks[q] = cb
+            lay.addWidget(cb)
+
+        btn_all = QPushButton("All")
+        btn_none = QPushButton("None")
+        btn_all.clicked.connect(lambda: self._set_quadrants({1,2,3,4}))
+        btn_none.clicked.connect(lambda: self._set_quadrants({1}))
+        lay.addWidget(btn_all)
+        lay.addWidget(btn_none)
 
         return gb
 
@@ -384,7 +415,14 @@ class WindLoadCases(QDialog):
         view.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         view.verticalHeader().setVisible(False)
         view.setFont(QFont("Arial", 10))
+        view.setWordWrap(True)
+        view.setTextElideMode(Qt.ElideNone)          # <- add (no ...)
+        view.resizeRowsToContents()
+        view.setEditTriggers(QAbstractItemView.NoEditTriggers)  # <- add
+        # make rows auto-resize whenever data changes (e.g., quadrant toggles)
+        model.dataChanged.connect(lambda *_: view.resizeRowsToContents())
         return view
+
 
     # ----- angle handling --------------------------------------------------
 
@@ -458,6 +496,8 @@ class WindLoadCases(QDialog):
         angles: Sequence[int],
     ) -> None:
         cfg = self.naming
+        quadrants = self._selected_quadrants()
+
         for r, label in enumerate(model.load_cases):
             limit_kind, case_code = _parse_row_label(label)
 
@@ -472,25 +512,35 @@ class WindLoadCases(QDialog):
             for c, ang in enumerate(angles):
                 current_val = (model._cells[r][c] or "").strip()
                 if current_val:
+                    # respect user-edited content; don't overwrite
                     continue
 
+                names_for_cell: List[str] = []
                 if model.title == "WL" and not model.show_case_column:
-                    name = f"{base}_{cfg.angle.prefix}{ang:g}"
+                    # WL: no limit/service tokens in label
+                    for q in quadrants:
+                        names_for_cell.append(f"{base}_{cfg.angle.prefix}{ang:g}_Q{q}")
                 else:
-                    name = _compose_name(
-                        cfg,
-                        base=base,
-                        limit_kind=limit_kind,
-                        case_code=case_code,
-                        angle=ang,
-                    )
-                model._cells[r][c] = name
+                    # WS: use template via _compose_name, then add quadrant suffix
+                    for q in quadrants:
+                        nm = _compose_name(
+                            cfg,
+                            base=base,
+                            limit_kind=limit_kind,
+                            case_code=case_code,
+                            angle=ang,
+                        ) + f"_Q{q}"
+                        names_for_cell.append(nm)
+
+                # join with newlines so each appears on its own line in the cell
+                model._cells[r][c] = "\n".join(names_for_cell)
 
         if model.rowCount() and model.columnCount():
             start_col = 1 if model.show_case_column else 0
             top_left = model.index(0, start_col)
             bottom_right = model.index(model.rowCount() - 1, model.columnCount() - 1)
             model.dataChanged.emit(top_left, bottom_right, [Qt.DisplayRole])
+
 
     # ----- WS checkbox handling --------------------------------------------
 
@@ -678,3 +728,24 @@ class WindLoadCases(QDialog):
 
         # finally fill missing
         self._autofill_all()
+
+
+    def _selected_quadrants(self) -> List[int]:
+        qs = [q for q, cb in self._quad_checks.items() if cb.isChecked()]
+        return sorted(qs) if qs else [1]  # safety: default to Q1
+
+    def _set_quadrants(self, qs: set[int]) -> None:
+        for q, cb in self._quad_checks.items():
+            cb.blockSignals(True)
+            cb.setChecked(q in qs)
+            cb.blockSignals(False)
+        self._on_quadrants_changed()
+
+    def _on_quadrants_changed(self) -> None:
+        for m in (self.ws_model, self.wl_model):
+            for r in range(len(m._cells)):
+                for c in range(len(m._cells[r])):
+                    m._cells[r][c] = ""  # clear
+        self._autofill_all()
+
+

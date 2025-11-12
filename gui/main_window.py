@@ -27,6 +27,14 @@ from gui.dialogs.wind_load_cases import WindLoadCases
 
 from midas.resources.structural_group import StructuralGroup
 
+from core.wind_load.live_wind_loads import (
+    build_live_wind_components_table,
+    apply_live_wind_loads_to_group,
+)
+
+import pandas as pd
+from PySide6.QtWidgets import QMessageBox  # already imported in some files
+
 
 class MainWindow(QMainWindow):
 
@@ -66,8 +74,13 @@ class MainWindow(QMainWindow):
         # Wind load cases
         wlc_group = QGroupBox("Wind Load Cases")
         wlc_lay = QHBoxLayout(wlc_group)
+
         self.btn_pair = QPushButton("Pair Wind Load Cases")
         wlc_lay.addWidget(self.btn_pair)
+
+        self.btn_assign_wind_loads = QPushButton("Assign Wind Loads")
+        wlc_lay.addWidget(self.btn_assign_wind_loads)
+
         main_layout .addWidget(wlc_group)
 
         # Toolbar
@@ -82,6 +95,7 @@ class MainWindow(QMainWindow):
         self.btn_edit.clicked.connect(self.open_wind_load_input)
         self.btn_pair.clicked.connect(self.open_pair_wind_load_cases)
         self.btn_generate.clicked.connect(self._on_generate_clicked)
+        self.btn_assign_wind_loads.clicked.connect(self._on_assign_wind_loads_clicked)
 
         # Global events
         self.bus.progressStarted.connect(self._on_progress_started)
@@ -307,3 +321,30 @@ class MainWindow(QMainWindow):
             self.units.set_length(units_cfg["length"])
         if "force" in units_cfg:
             self.units.set_force(units_cfg["force"])
+
+    def _on_assign_wind_loads_clicked(self) -> None:
+        try:
+            # 1) Control Data → live wind coefficients
+            wl = self.control_model.loads.wind_live
+
+            # 2) WL cases from wind_db (Pair Wind Load Cases)
+            wl_df = getattr(wind_db, "wl_cases", None)
+            if wl_df is None:
+                wl_df = pd.DataFrame()
+
+            # 3) Combine into components table
+            components_df = build_live_wind_components_table(
+                angles=wl.angles,
+                transverse=wl.transverse,
+                longitudinal=wl.longitudinal,
+                wl_cases_df=wl_df,
+            )
+
+            # 4) Apply to whatever structural group you want
+            # (you can change this name later to your actual group)
+            apply_live_wind_loads_to_group("Deck Elements", components_df)
+
+        except Exception as exc:
+            print("Error assigning live wind loads:", exc)
+
+

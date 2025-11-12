@@ -17,7 +17,6 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-
 # # if __name__ == "__main__":
 
 #     amc = AnalyticalModelClassification(pier_link_distance=10.0) 
@@ -58,3 +57,9 @@ if __name__ == "__main__":
 #     ("Wind Load Y", "L", "Live Load"),
 #     ("Wind Load Z", "W", "Wind on structure"),
 # ])
+
+# from midas.resources.structural_group import StructuralGroup
+
+# element_ids = StructuralGroup.get_elements_by_name("Deck Elements")
+
+# print(element_ids)

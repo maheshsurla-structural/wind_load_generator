@@ -11,7 +11,7 @@ from .resources.static_load_case import StaticLoadCase
 from .material import get_materials
 from .resources.section import get_section_properties 
 from .view_select import ViewSelected
-from .create_structural_group import create_structural_group
+# from .create_structural_group import create_structural_group
 
 # public aliases (friendly plural-ish handles)
 api = MidasAPI

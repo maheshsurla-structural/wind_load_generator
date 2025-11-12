@@ -1,9 +1,9 @@
 # core/wind_load/beam_load.py
 
 from __future__ import annotations
-from typing import Dict, List, Any, Tuple
+from typing import Sequence, Dict, List, Any, Tuple
 import pandas as pd
-
+from functools import lru_cache
 from midas.resources.structural_group import StructuralGroup
 from core.wind_load.compute_section_exposures import compute_section_exposures
 from midas.resources.element_beam_load import BeamLoadItem, BeamLoadResource
@@ -46,7 +46,7 @@ def _get_element_to_section_map(element_ids: List[int]) -> Dict[int, int]:
 # STEP 1: Build the per-element wind load plan
 # -------------------------------------------------
 
-def build_beam_load_plan_for_group(
+def build_uniform_pressure_beam_load_plan_for_group(
     group_name: str,
     load_case_name: str,
     pressure: float,
@@ -58,7 +58,7 @@ def build_beam_load_plan_for_group(
     load_group_name: str = "",
 ) -> pd.DataFrame:
     """
-    Build the wind UDL plan for a structural group but DO NOT touch MIDAS yet.
+    Build a UDL plan from a UNIFORM PRESSURE (kips/ft^2) on a structural group.
 
     Returns a DataFrame with one row per element in the group:
 
@@ -134,79 +134,117 @@ def build_beam_load_plan_for_group(
         df.reset_index(drop=True, inplace=True)
     return df
 
+# -------------------------------------------------
+# LINE LOAD plan (kips/ft directly)
+# -------------------------------------------------
+
+def build_uniform_load_beam_load_plan_for_group(
+    *,
+    group_name: str,
+    load_case_name: str,
+    line_load: float,
+    udl_direction: str,
+    load_group_name: str | None = None,
+    element_ids: Sequence[int] | None = None,
+    eccentricity: float = 0.0,           # ← NEW (ft, same units as model)
+) -> pd.DataFrame:
+
+    # 1) Resolve elements for this group
+    if element_ids is None:
+        element_ids = StructuralGroup.get_elements_by_name(group_name)
+
+    element_ids = [int(e) for e in element_ids]
+
+    rows: list[dict] = []
+    for eid in element_ids:
+        rows.append(
+            {
+                "element_id": int(eid),
+                "line_load": float(line_load),
+                "load_case": load_case_name,
+                "load_direction": udl_direction,
+                "load_group": load_group_name or load_case_name,
+                "group_name": group_name,
+                "eccentricity": float(eccentricity),   # ← NEW
+            }
+        )
+
+    plan_df = pd.DataFrame(rows)
+    if not plan_df.empty:
+        plan_df.sort_values("element_id", inplace=True)
+        plan_df.reset_index(drop=True, inplace=True)
+    return plan_df
+
+
 
 # -------------------------------------------------
 # STEP 2: Take that plan and actually PUT beam loads to MIDAS
 # -------------------------------------------------
 
-def apply_wind_load_to_midas_for_group(
-    group_name: str,
-    load_case_name: str,
-    pressure: float,
+# -------------------------------------------------
+# APPLY any beam-load plan to MIDAS
+# -------------------------------------------------
+
+def apply_beam_load_plan_to_midas(
+    plan_df: pd.DataFrame,
     *,
-    load_group_name: str = "",
-    extra_exposure_y_default: float = 0.0,
-    extra_exposure_y_by_id: Dict[int, float] | None = None,
-    exposure_axis: str = "y",
-    udl_direction: str = "GZ",
+    start_id: int = 1,
 ) -> pd.DataFrame:
     """
-    End-to-end function you call from the UI / workflow.
+    Generic: take a plan DataFrame with columns
+        ['element_id', 'line_load', 'load_case', 'load_direction', 'load_group']
+    and send them as BeamLoadItem specs to MIDAS.
 
-    What it does:
-      1. Calls build_beam_load_plan_for_group(...) to compute UDL per element.
-      2. Converts each row to BeamLoadItem.
-      3. Sends them to MIDAS (/db/bmld) using BeamLoadResource.create_from_specs().
-      4. Returns the plan DataFrame for logging / display.
-
-    After this runs, the wind beam loads exist in the MIDAS model.
+    start_id lets you control ID uniqueness if you ever batch multiple calls.
     """
 
-    # STEP 1: math + bookkeeping
-    plan_df = build_beam_load_plan_for_group(
-        group_name=group_name,
-        load_case_name=load_case_name,
-        pressure=pressure,
-        extra_exposure_y_default=extra_exposure_y_default,
-        extra_exposure_y_by_id=extra_exposure_y_by_id,
-        exposure_axis=exposure_axis,
-        udl_direction=udl_direction,
-        load_group_name=load_group_name,
-    )
-
-    # Nothing to assign? bail out gracefully
-    if plan_df.empty:
+    if plan_df is None or plan_df.empty:
         return plan_df
 
-    # STEP 2: turn rows into BeamLoadItem specs MIDAS understands
     specs: List[Tuple[int, BeamLoadItem]] = []
 
     for idx, row in plan_df.iterrows():
         element_id = int(row["element_id"])
-        q = float(row["line_load"])  # final UDL we want to apply
+        q = float(row["line_load"])
+        if abs(q) < 1e-9:
+            continue
+
         lcname = str(row["load_case"])
         ldgr = str(row["load_group"])
         direction = str(row["load_direction"])
 
+        # NEW: eccentricity (ft). If not present, assume 0.
+        ecc = float(row.get("eccentricity", 0.0))
+        use_ecc = abs(ecc) > 1e-9
+
+        # Choose an eccentricity axis:
+        # for horizontal wind (LX/LY) you usually want vertical offset → "GZ"
+        ecc_dir = "GZ"
+
         item = BeamLoadItem(
-            ID=idx + 1,             # unique per batch
-            LCNAME=lcname,          
-            GROUP_NAME=ldgr,        
+            ID=start_id + idx,
+            LCNAME=lcname,
+            GROUP_NAME=ldgr,
             CMD="BEAM",
             TYPE="UNILOAD",
             DIRECTION=direction,
             USE_PROJECTION=False,
-            USE_ECCEN=False,
-            D=[0, 1, 0, 0],         # [start, end, extra?, extra?] normalized to span
-            P=[q, q, 0, 0],         # uniform load q over full length
-            # all eccentric/additional flags default off, which matches your
-            # simple UDL JSON example
-        )
+            USE_ECCEN=use_ecc,
 
+            # full-length uniform load
+            D=[0, 1, 0, 0],
+            P=[q, q, 0, 0],
+
+            # eccentricity block
+            ECCEN_TYPE=1,          # distance type
+            ECCEN_DIR=ecc_dir,     # axis of eccentricity
+            I_END=ecc,             # 6 ft at I-end
+            J_END=ecc,             # 6 ft at J-end
+            # USE_J_END is auto True if J_END != 0
+        )
         specs.append((element_id, item))
 
-    # STEP 3: single PUT to /db/bmld via BeamLoadResource
-    BeamLoadResource.create_from_specs(specs)
+    if specs:
+        BeamLoadResource.create_from_specs(specs)
 
-    # STEP 4: return summary DataFrame for whoever called this
     return plan_df
