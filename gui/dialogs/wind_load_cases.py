@@ -398,30 +398,40 @@ class WindLoadCases(QDialog):
         cbrow.addStretch()
         vlay.addLayout(cbrow)
 
-        # table
-        view = self._create_table_view(model)
-        vlay.addWidget(view)
+        # table (single instance)
+        self.ws_view = self._create_table_view(model)
+        vlay.addWidget(self.ws_view)
+
         return gb
+
 
     def _build_table_group(self, title: str, model: QAbstractTableModel) -> QGroupBox:
         gb = QGroupBox(title)
         vlay = QVBoxLayout(gb)
-        vlay.addWidget(self._create_table_view(model))
+
+        # table (single instance)
+        self.wl_view = self._create_table_view(model)
+        vlay.addWidget(self.wl_view)
+
         return gb
+
 
     def _create_table_view(self, model: QAbstractTableModel) -> QTableView:
         view = QTableView()
+        self._setup_table_view(view, model)
+        return view
+
+    def _setup_table_view(self, view: QTableView, model: QAbstractTableModel) -> None:
         view.setModel(model)
         view.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         view.verticalHeader().setVisible(False)
         view.setFont(QFont("Arial", 10))
         view.setWordWrap(True)
-        view.setTextElideMode(Qt.ElideNone)          # <- add (no ...)
+        view.setTextElideMode(Qt.ElideNone)
         view.resizeRowsToContents()
-        view.setEditTriggers(QAbstractItemView.NoEditTriggers)  # <- add
-        # make rows auto-resize whenever data changes (e.g., quadrant toggles)
+        view.setEditTriggers(QAbstractItemView.NoEditTriggers)
         model.dataChanged.connect(lambda *_: view.resizeRowsToContents())
-        return view
+
 
 
     # ----- angle handling --------------------------------------------------
@@ -443,7 +453,6 @@ class WindLoadCases(QDialog):
         angles_now = self._current_angles()
         angle_prefix = self.naming.angle.prefix
 
-        # rebuild WS
         self.ws_model = WindLoadTableModel(
             title="WS",
             load_cases=self.ws_visible_cases,
@@ -451,9 +460,8 @@ class WindLoadCases(QDialog):
             angle_prefix=angle_prefix,
             show_case_column=True,
         )
-        self._replace_last_widget(self.ws_group, self._create_table_view(self.ws_model))
+        self._setup_table_view(self.ws_view, self.ws_model)
 
-        # rebuild WL
         self.wl_model = WindLoadTableModel(
             title="WL",
             load_cases=["WL"],
@@ -461,17 +469,9 @@ class WindLoadCases(QDialog):
             angle_prefix=angle_prefix,
             show_case_column=False,
         )
-        self._replace_last_widget(self.wl_group, self._create_table_view(self.wl_model))
+        self._setup_table_view(self.wl_view, self.wl_model)
 
         self._autofill_all()
-
-    @staticmethod
-    def _replace_last_widget(group: QGroupBox, new_widget) -> None:
-        lay = group.layout()
-        old = lay.itemAt(lay.count() - 1).widget()
-        lay.removeWidget(old)
-        old.deleteLater()
-        lay.addWidget(new_widget)
 
     # ----- autofill --------------------------------------------------------
 
@@ -677,28 +677,32 @@ class WindLoadCases(QDialog):
         if ws_df.empty and wl_df.empty:
             return
 
-        # angles in DB
+        # 1) Angles in DB → drive the angle spinners
         angles_set = set()
         for df in (ws_df, wl_df):
             if not df.empty and "Angle" in df:
-                angles_set.update(int(a) for a in df["Angle"].unique())
+                try:
+                    angles_set.update(int(a) for a in df["Angle"].unique())
+                except Exception:
+                    pass
         if angles_set:
             angles_sorted = sorted(angles_set)
             self.spin_num.setValue(len(angles_sorted))
-            # this calls _rebuild_models()
+            # set spinner texts (this triggers _rebuild_models via valueChanged)
             for i, ang in enumerate(angles_sorted):
-                self._angle_spinners[i].blockSignals(True)
-                self._angle_spinners[i].setCurrentText(str(ang))
-                self._angle_spinners[i].blockSignals(False)
-            self._rebuild_models()
+                if i < len(self._angle_spinners):
+                    self._angle_spinners[i].blockSignals(True)
+                    self._angle_spinners[i].setCurrentText(str(ang))
+                    self._angle_spinners[i].blockSignals(False)
+            self._rebuild_models()  # refresh models/views with new angles
 
-        # --- load WS ---
+        # 2) WS visible rows from DB cases (if any)
         if not ws_df.empty:
             db_cases = [str(c) for c in ws_df["Case"].unique()]
             active_cases = [c for c in self.ws_all_cases if c in db_cases] or self.ws_all_cases[:]
             self.ws_visible_cases = active_cases
 
-            # update checkboxes
+            # update checkboxes (no signals)
             for cb in self._ws_checkboxes:
                 cb.blockSignals(True)
                 cb.setChecked(cb.text() in active_cases)
@@ -707,27 +711,68 @@ class WindLoadCases(QDialog):
             # rebuild again to reflect new visible rows
             self._rebuild_models()
 
+            # 3) Paint WS cells (append if multiple names for same angle)
             for _, row in ws_df.iterrows():
-                case_name = str(row["Case"])
-                angle_val = int(row["Angle"])
+                case_name = str(row.get("Case", ""))
+                try:
+                    angle_val = int(row.get("Angle", 0))
+                except Exception:
+                    continue
+                value = str(row.get("Value", ""))
+
+                # find row and column indices; skip if not present in current UI
+                try:
+                    r = self.ws_model.load_cases.index(case_name)
+                    c = self.ws_model.angles.index(angle_val)
+                except ValueError:
+                    continue
+
+                existing = (self.ws_model._cells[r][c] or "").strip()
+                joined = f"{existing}\n{value}".strip() if existing else value
+                self.ws_model.set_cell(r, angle_val, joined)
+
+        # 4) Paint WL cells (append if multiple names for same angle)
+        if not wl_df.empty:
+            for _, row in wl_df.iterrows():
+                try:
+                    angle_val = int(row.get("Angle", 0))
+                except Exception:
+                    continue
                 value = str(row.get("Value", ""))
 
                 try:
-                    r = self.ws_model.load_cases.index(case_name)
+                    c = self.wl_model.angles.index(angle_val)
                 except ValueError:
                     continue
-                self.ws_model.set_cell(r, angle_val, value)
 
-        # --- load WL ---
-        if not wl_df.empty:
-            for _, row in wl_df.iterrows():
-                angle_val = int(row["Angle"])
-                value = str(row.get("Value", ""))
-                # WL always single row, index 0
-                self.wl_model.set_cell(0, angle_val, value)
+                existing = (self.wl_model._cells[0][c] or "").strip()
+                joined = f"{existing}\n{value}".strip() if existing else value
+                self.wl_model.set_cell(0, angle_val, joined)
 
-        # finally fill missing
+        # Infer quadrants present in saved names to reflect in the checkboxes
+        present_quads = set()
+        for df in (ws_df, wl_df):
+            if not df.empty and "Value" in df:
+                for val in df["Value"]:
+                    s = str(val or "")
+                    # look for suffix like _Q1 .. _Q4
+                    if "_Q1" in s: present_quads.add(1)
+                    if "_Q2" in s: present_quads.add(2)
+                    if "_Q3" in s: present_quads.add(3)
+                    if "_Q4" in s: present_quads.add(4)
+
+        if present_quads:
+            # update UI without triggering extra rebuilds
+            for q, cb in self._quad_checks.items():
+                cb.blockSignals(True)
+                cb.setChecked(q in present_quads)
+                cb.blockSignals(False)
+
+
+
+        # 5) Finally fill any remaining empty cells based on current naming rules
         self._autofill_all()
+
 
 
     def _selected_quadrants(self) -> List[int]:
