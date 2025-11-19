@@ -46,6 +46,50 @@ def _get_element_to_section_map(element_ids: List[int]) -> Dict[int, int]:
 # STEP 1: Build the per-element wind load plan
 # -------------------------------------------------
 
+def build_uniform_pressure_beam_load_plan_from_depths(
+    *,
+    group_name: str,
+    load_case_name: str,
+    pressure: float,
+    udl_direction: str,
+    depth_by_eid: Dict[int, float],
+    load_group_name: str | None = None,
+) -> pd.DataFrame:
+    """
+    Low-level helper: given
+        - pressure (ksf)
+        - precomputed exposure depth per element (ft)
+    build a beam-load plan DataFrame.
+
+    This function does NOT talk to MIDAS. It just does:
+        q = pressure * depth_by_eid[eid]
+    """
+
+    rows: list[dict] = []
+
+    for eid, depth in depth_by_eid.items():
+        q = pressure * depth  # ksf * ft = k/ft
+        if abs(q) < 1e-9:
+            continue
+
+        rows.append(
+            {
+                "element_id": int(eid),
+                "line_load": float(q),
+                "load_case": load_case_name,
+                "load_direction": udl_direction,
+                "load_group": load_group_name or load_case_name,
+                "group_name": group_name,
+            }
+        )
+
+    plan_df = pd.DataFrame(rows)
+    if not plan_df.empty:
+        plan_df.sort_values("element_id", inplace=True)
+        plan_df.reset_index(drop=True, inplace=True)
+    return plan_df
+
+
 def build_uniform_pressure_beam_load_plan_for_group(
     group_name: str,
     load_case_name: str,
@@ -53,35 +97,23 @@ def build_uniform_pressure_beam_load_plan_for_group(
     *,
     extra_exposure_y_default: float = 0.0,
     extra_exposure_y_by_id: Dict[int, float] | None = None,
-    exposure_axis: str = "y",   # "y" -> use exposure_y, "z" -> use exposure_z
-    udl_direction: str = "GZ",  # "GX","GY","GZ","LX","LY","LZ" for MIDAS beam load dir
+    exposure_axis: str = "y",
+    udl_direction: str = "GZ",
     load_group_name: str = "",
 ) -> pd.DataFrame:
     """
-    Build a UDL plan from a UNIFORM PRESSURE (kips/ft^2) on a structural group.
-
-    Returns a DataFrame with one row per element in the group:
-
-        element_id          (int)   which element gets the load
-        section_id          (int)   section property assigned to that element
-        exposure_depth      (float) projected depth used for wind
-        pressure            (float) input pressure
-        line_load           (float) final UDL = pressure * exposure_depth
-        load_case           (str)   name of the load case to apply
-        load_direction      (str)   "GZ"/"GY"/etc for MIDAS
-        load_group          (str)   load group name for MIDAS
-        group_name          (str)   the structural group we started from
+    High-level helper: resolve elements, sections, exposures from MIDAS
+    then call build_uniform_pressure_beam_load_plan_from_depths().
     """
 
-    # 1. get all elements in this structural group
-    element_ids = StructuralGroup.get_elements_by_name(group_name)
+    from midas.resources.structural_group import StructuralGroup
+    from midas import get_section_properties
+    from core.wind_load.compute_section_exposures import compute_section_exposures
 
-    # 2. map element -> section (property) ID
+    element_ids = StructuralGroup.get_elements_by_name(group_name)
     elem_to_sect = _get_element_to_section_map(element_ids)
 
-    # 3. compute exposure depths for ALL sections
     section_props_raw = get_section_properties()
-    
     exposures_df = compute_section_exposures(
         section_props_raw,
         extra_exposure_y_default=extra_exposure_y_default,
@@ -89,50 +121,27 @@ def build_uniform_pressure_beam_load_plan_for_group(
         as_dataframe=True,
     )
 
-
-
-    # make sure index is int so it matches elem_to_sect values
     try:
         exposures_df.index = exposures_df.index.astype(int)
     except ValueError:
-        pass  # fallback if some IDs aren't numeric
+        pass
 
-    # choose projection axis
     depth_col = "exposure_z" if exposure_axis.lower() == "z" else "exposure_y"
 
-    rows: List[dict[str, Any]] = []
+    depth_by_eid: Dict[int, float] = {}
+    for eid, sect_id in elem_to_sect.items():
+        if sect_id in exposures_df.index:
+            depth_by_eid[int(eid)] = float(exposures_df.loc[sect_id, depth_col])
 
-    for eid in element_ids:
-        sect_id = elem_to_sect.get(eid)
-        if sect_id is None:
-            # No section assigned? skip
-            continue
-        if sect_id not in exposures_df.index:
-            # Section not in exposure table? skip
-            continue
+    return build_uniform_pressure_beam_load_plan_from_depths(
+        group_name=group_name,
+        load_case_name=load_case_name,
+        pressure=pressure,
+        udl_direction=udl_direction,
+        depth_by_eid=depth_by_eid,
+        load_group_name=load_group_name or load_case_name,
+    )
 
-        exposure_depth = float(exposures_df.loc[sect_id, depth_col])
-        udl_value = pressure * exposure_depth  # final line load (force/length)
-
-        rows.append(
-            {
-                "element_id": int(eid),
-                "section_id": int(sect_id),
-                "exposure_depth": exposure_depth,
-                "pressure": pressure,
-                "line_load": udl_value,
-                "load_case": load_case_name,
-                "load_direction": udl_direction,
-                "load_group": load_group_name,
-                "group_name": group_name,
-            }
-        )
-
-    df = pd.DataFrame(rows)
-    if not df.empty:
-        df.sort_values("element_id", inplace=True)
-        df.reset_index(drop=True, inplace=True)
-    return df
 
 # -------------------------------------------------
 # LINE LOAD plan (kips/ft directly)
@@ -189,21 +198,32 @@ def apply_beam_load_plan_to_midas(
     plan_df: pd.DataFrame,
     *,
     start_id: int = 1,
+    chunk_size: int = 4000,   # NEW: limit number of BMLD rows per request
 ) -> pd.DataFrame:
     """
-    Generic: take a plan DataFrame with columns
+    Take a plan DataFrame with columns
         ['element_id', 'line_load', 'load_case', 'load_direction', 'load_group']
     and send them as BeamLoadItem specs to MIDAS.
 
-    start_id lets you control ID uniqueness if you ever batch multiple calls.
+    To avoid MIDAS silently dropping very large JSON payloads, the specs are
+    sent in chunks of `chunk_size` items.
     """
 
     if plan_df is None or plan_df.empty:
+        print("[apply_beam_load_plan_to_midas] plan_df is empty; nothing to send.")
         return plan_df
 
-    specs: List[Tuple[int, BeamLoadItem]] = []
+    total_rows = len(plan_df)
+    print(
+        f"[apply_beam_load_plan_to_midas] Preparing {total_rows} beam loads "
+        f"in chunks of {chunk_size}..."
+    )
 
-    for idx, row in plan_df.iterrows():
+    specs: List[Tuple[int, BeamLoadItem]] = []
+    next_id = start_id
+    sent = 0
+
+    for _, row in plan_df.iterrows():
         element_id = int(row["element_id"])
         q = float(row["line_load"])
         if abs(q) < 1e-9:
@@ -213,16 +233,15 @@ def apply_beam_load_plan_to_midas(
         ldgr = str(row["load_group"])
         direction = str(row["load_direction"])
 
-        # NEW: eccentricity (ft). If not present, assume 0.
+        # Eccentricity (ft). If not present, assume 0.
         ecc = float(row.get("eccentricity", 0.0))
         use_ecc = abs(ecc) > 1e-9
 
-        # Choose an eccentricity axis:
-        # for horizontal wind (LX/LY) you usually want vertical offset → "GZ"
+        # For horizontal wind (LX/LY) we usually use vertical offset → "GZ"
         ecc_dir = "GZ"
 
         item = BeamLoadItem(
-            ID=start_id + idx,
+            ID=next_id,
             LCNAME=lcname,
             GROUP_NAME=ldgr,
             CMD="BEAM",
@@ -230,21 +249,41 @@ def apply_beam_load_plan_to_midas(
             DIRECTION=direction,
             USE_PROJECTION=False,
             USE_ECCEN=use_ecc,
-
             # full-length uniform load
             D=[0, 1, 0, 0],
             P=[q, q, 0, 0],
-
             # eccentricity block
-            ECCEN_TYPE=1,          # distance type
-            ECCEN_DIR=ecc_dir,     # axis of eccentricity
-            I_END=ecc,             # 6 ft at I-end
-            J_END=ecc,             # 6 ft at J-end
-            # USE_J_END is auto True if J_END != 0
+            ECCEN_TYPE=1,      # distance type
+            ECCEN_DIR=ecc_dir, # axis of eccentricity
+            I_END=ecc,         # ecc at I-end
+            J_END=ecc,         # ecc at J-end
         )
-        specs.append((element_id, item))
 
+        specs.append((element_id, item))
+        next_id += 1
+
+        # If we've accumulated a full chunk, flush it to MIDAS
+        if len(specs) >= chunk_size:
+            print(
+                f"[apply_beam_load_plan_to_midas] "
+                f"Sending chunk of {len(specs)} specs to MIDAS..."
+            )
+            BeamLoadResource.create_from_specs(specs)
+            sent += len(specs)
+            specs.clear()
+
+    # Flush any remaining specs
     if specs:
+        print(
+            f"[apply_beam_load_plan_to_midas] "
+            f"Sending final chunk of {len(specs)} specs to MIDAS..."
+        )
         BeamLoadResource.create_from_specs(specs)
+        sent += len(specs)
+
+    print(
+        f"[apply_beam_load_plan_to_midas] Done. Sent {sent} specs "
+        f"({total_rows} plan rows, some may have been skipped as ~0)."
+    )
 
     return plan_df

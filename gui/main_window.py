@@ -27,10 +27,21 @@ from gui.dialogs.wind_load_cases import WindLoadCases
 
 from midas.resources.structural_group import StructuralGroup
 
+from core.wind_load.beam_load import apply_beam_load_plan_to_midas
+
 from core.wind_load.live_wind_loads import (
     build_live_wind_components_table,
     apply_live_wind_loads_to_group,
+    build_live_wind_beam_load_plan_for_group,   # NEW
 )
+
+from core.wind_load.structural_wind_loads import (
+    build_structural_wind_components_table,
+    apply_structural_wind_loads_to_group,
+    build_structural_wind_beam_load_plan_for_group,   # NEW
+)
+
+
 
 import pandas as pd
 from PySide6.QtWidgets import QMessageBox  # already imported in some files
@@ -322,29 +333,115 @@ class MainWindow(QMainWindow):
         if "force" in units_cfg:
             self.units.set_force(units_cfg["force"])
 
-    def _on_assign_wind_loads_clicked(self) -> None:
-        try:
-            # 1) Control Data → live wind coefficients
-            wl = self.control_model.loads.wind_live
 
-            # 2) WL cases from wind_db (Pair Wind Load Cases)
+    def _on_assign_wind_loads_clicked(self) -> None:
+        """Assign LIVE wind (WL) and STRUCTURAL wind (WS) loads to the deck group."""
+        try:
+            # ----------------- Resolve deck group name -----------------
+            naming = getattr(self.control_model, "naming", None)
+            base_deck_name = getattr(naming, "deck_name", None) or "Deck"
+            deck_group_name = f"{base_deck_name.strip()} Elements"
+
+            plans: list[pd.DataFrame] = []
+
+            # ============================================================
+            # 1) LIVE WIND (WL)
+            # ============================================================
+            wl = self.control_model.loads.wind_live  # WindLiveLoadCoefficients
+
             wl_df = getattr(wind_db, "wl_cases", None)
             if wl_df is None:
                 wl_df = pd.DataFrame()
 
-            # 3) Combine into components table
-            components_df = build_live_wind_components_table(
+            live_components_df = build_live_wind_components_table(
                 angles=wl.angles,
                 transverse=wl.transverse,
                 longitudinal=wl.longitudinal,
                 wl_cases_df=wl_df,
             )
 
-            # 4) Apply to whatever structural group you want
-            # (you can change this name later to your actual group)
-            apply_live_wind_loads_to_group("Deck Elements", components_df)
+            if live_components_df is not None and not live_components_df.empty:
+                wl_plan = build_live_wind_beam_load_plan_for_group(
+                    deck_group_name, live_components_df
+                )
+                if wl_plan is not None and not wl_plan.empty:
+                    plans.append(wl_plan)
+            else:
+                print(
+                    f"[_on_assign_wind_loads_clicked] "
+                    f"No LIVE wind components for '{deck_group_name}'."
+                )
+
+            # ============================================================
+            # 2) STRUCTURAL WIND (WS)
+            # ============================================================
+            if wind_db.wind_pressures.empty:
+                QMessageBox.warning(
+                    self,
+                    "Wind Pressures Missing",
+                    "Wind pressures have not been generated yet.\n"
+                    "Please click 'Generate Wind Data' before assigning structural wind loads.",
+                )
+                # We still allow WL plan (if any) to be applied below.
+            else:
+                skew = self.control_model.loads.skew  # SkewCoefficients
+                raw_ws_df = getattr(wind_db, "ws_cases", None)
+                if raw_ws_df is None:
+                    raw_ws_df = pd.DataFrame()
+
+                if {"Case", "Angle", "Value"}.issubset(set(raw_ws_df.columns)):
+                    ws_df = raw_ws_df
+                else:
+                    ws_df = pd.DataFrame(columns=["Case", "Angle", "Value"])
+
+                ws_components_df = build_structural_wind_components_table(
+                    group_name=deck_group_name,
+                    angles=skew.angles,
+                    transverse=skew.transverse,
+                    longitudinal=skew.longitudinal,
+                    ws_cases_df=ws_df,
+                    wind_pressures_df=wind_db.wind_pressures,
+                )
+
+                if ws_components_df is not None and not ws_components_df.empty:
+                    ws_plan = build_structural_wind_beam_load_plan_for_group(
+                        group_name=deck_group_name,
+                        components_df=ws_components_df,
+                        exposure_axis="y",   # local depth is Y
+                    )
+                    if ws_plan is not None and not ws_plan.empty:
+                        plans.append(ws_plan)
+                else:
+                    print(
+                        f"[_on_assign_wind_loads_clicked] "
+                        f"No WS components for '{deck_group_name}'."
+                    )
+
+            # ============================================================
+            # 3) COMBINE & APPLY
+            # ============================================================
+            if not plans:
+                print("[_on_assign_wind_loads_clicked] No WL or WS loads to apply.")
+                return
+
+            combined_plan = pd.concat(plans, ignore_index=True)
+            combined_plan.sort_values(["load_case", "element_id"], inplace=True)
+            combined_plan.reset_index(drop=True, inplace=True)
+
+            print(
+                f"[_on_assign_wind_loads_clicked] "
+                f"Applying combined WL+WS plan ({len(combined_plan)} rows) "
+                f"to '{deck_group_name}'"
+            )
+
+            apply_beam_load_plan_to_midas(combined_plan)
+            self.statusBar().showMessage("Wind loads (WL + WS) assigned.", 4000)
 
         except Exception as exc:
-            print("Error assigning live wind loads:", exc)
-
+            print("Error assigning wind loads:", exc)
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"An error occurred while assigning wind loads:\n{exc}",
+            )
 

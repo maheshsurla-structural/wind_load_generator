@@ -36,19 +36,16 @@ if __name__ == "__main__":
 # print(deck_elems)   # [101, 102, 103, ...]
 
 
-# from core.wind_load.beam_load import apply_wind_load_to_midas_for_group
+# from core.wind_load.beam_load import (
+#     build_uniform_pressure_beam_load_plan_for_group,
+#     apply_beam_load_plan_to_midas,
 
-# # # Choose one of your actual element groups from MIDAS
-# group_name = "Deck Elements"
-
-# # Apply a uniform wind pressure (e.g. 0.8 kN/m²)
-# apply_wind_load_to_midas_for_group(
-#     group_name=group_name,
-#     load_case_name="Wind Load Check",
-#     pressure=0.8,
-#     load_group_name="Wind Load Check",  # optional, can match load case name
-#     udl_direction = "LY",
 # )
+# from core.wind_load.structural_wind_loads import test_structural_wind_two_cases
+
+# test_structural_wind_two_cases()
+
+
 
 
 # from midas import StaticLoadCase
