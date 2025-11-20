@@ -1,0 +1,196 @@
+{
+    "1": {
+        "SECTTYPE": "DBUSER",
+        "SECT_NAME": "Bracing",
+        "SECT_BEFORE": {
+            "OFFSET_PT": "CT",
+            "OFFSET_CENTER": 0,
+            "USER_OFFSET_REF": 0,
+            "HORZ_OFFSET_OPT": 0,
+            "USERDEF_OFFSET_YI": 0,
+            "VERT_OFFSET_OPT": 0,
+            "USERDEF_OFFSET_ZI": 0,
+            "USE_SHEAR_DEFORM": true,
+            "USE_WARPING_EFFECT": false,
+            "SHAPE": "L",
+            "DATATYPE": 1,
+            "SECT_I": {
+                "DB_NAME": "AISC",
+                "SECT_NAME": "L6x6x7/16"
+            }
+        }
+    },
+    "2": {
+        "SECTTYPE": "COMPOSITE",
+        "SECT_NAME": "Steel girder",
+        "SECT_BEFORE": {
+            "OFFSET_PT": "CT",
+            "OFFSET_CENTER": 0,
+            "USER_OFFSET_REF": 0,
+            "HORZ_OFFSET_OPT": 0,
+            "USERDEF_OFFSET_YI": 0,
+            "VERT_OFFSET_OPT": 0,
+            "USERDEF_OFFSET_ZI": 0,
+            "USE_SHEAR_DEFORM": true,
+            "USE_WARPING_EFFECT": false,
+            "SHAPE": "I",
+            "SECT_I": {
+                "vSIZE": [
+                    8.333333333333332,
+                    0.08333333333333331,
+                    1.6666666666666665,
+                    0.10416666666666666,
+                    3.166666666666666,
+                    0.10416666666666666
+                ],
+                "STIFFENER": {
+                    "POSITION": 0,
+                    "REFERENCE_OF_D": 0,
+                    "STIFF_CNT": [
+                        0,
+                        0,
+                        0,
+                        0
+                    ]
+                }
+            },
+            "MATL_ELAST": 7.1178220446311995,
+            "MATL_DENS": 3.271680000000001,
+            "MATL_POIS_S": 0.3,
+            "MATL_POIS_C": 0.2,
+            "MATL_THERMAL": 1.3,
+            "USE_MULTI_ELAST": false
+        },
+        "SECT_AFTER": {
+            "SLAB": [
+                7.999999999999998,
+                0.7499999999999999,
+                0.24999999999999994
+            ]
+        }
+    },
+    "3": {
+        "SECTTYPE": "DBUSER",
+        "SECT_NAME": "Pier Cap",
+        "SECT_BEFORE": {
+            "OFFSET_PT": "CT",
+            "OFFSET_CENTER": 0,
+            "USER_OFFSET_REF": 0,
+            "HORZ_OFFSET_OPT": 0,
+            "USERDEF_OFFSET_YI": 0,
+            "VERT_OFFSET_OPT": 0,
+            "USERDEF_OFFSET_ZI": 0,
+            "USE_SHEAR_DEFORM": true,
+            "USE_WARPING_EFFECT": false,
+            "SHAPE": "SB",
+            "DATATYPE": 2,
+            "SECT_I": {
+                "vSIZE": [
+                    4.999999999999999,
+                    8.333333333333332,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                ]
+            }
+        }
+    },
+    "4": {
+        "SECTTYPE": "DBUSER",
+        "SECT_NAME": "Pier",
+        "SECT_BEFORE": {
+            "OFFSET_PT": "CC",
+            "OFFSET_CENTER": 0,
+            "USER_OFFSET_REF": 0,
+            "HORZ_OFFSET_OPT": 0,
+            "USERDEF_OFFSET_YI": 0,
+            "VERT_OFFSET_OPT": 0,
+            "USERDEF_OFFSET_ZI": 0,
+            "USE_SHEAR_DEFORM": true,
+            "USE_WARPING_EFFECT": false,
+            "SHAPE": "STRK",
+            "DATATYPE": 2,
+            "SECT_I": {
+                "vSIZE": [
+                    4.999999999999999,
+                    9.999999999999998,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                ]
+            }
+        }
+    },
+    "5": {
+        "SECTTYPE": "DBUSER",
+        "SECT_NAME": "GirderWizRectangle_5",
+        "SECT_BEFORE": {
+            "OFFSET_PT": "CC",
+            "OFFSET_CENTER": 0,
+            "USER_OFFSET_REF": 0,
+            "HORZ_OFFSET_OPT": 0,
+            "USERDEF_OFFSET_YI": 0,
+            "VERT_OFFSET_OPT": 0,
+            "USERDEF_OFFSET_ZI": 0,
+            "USE_SHEAR_DEFORM": true,
+            "USE_WARPING_EFFECT": false,
+            "SHAPE": "SB",
+            "DATATYPE": 2,
+            "SECT_I": {
+                "vSIZE": [
+                    0.0032808398950131224,
+                    0.0032808398950131224,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                ]
+            }
+        }
+    },
+    "6": {
+        "SECTTYPE": "DBUSER",
+        "SECT_NAME": "GirderWizRectangle_6",
+        "SECT_BEFORE": {
+            "OFFSET_PT": "CT",
+            "OFFSET_CENTER": 0,
+            "USER_OFFSET_REF": 0,
+            "HORZ_OFFSET_OPT": 0,
+            "USERDEF_OFFSET_YI": 0,
+            "VERT_OFFSET_OPT": 0,
+            "USERDEF_OFFSET_ZI": 0,
+            "USE_SHEAR_DEFORM": true,
+            "USE_WARPING_EFFECT": false,
+            "SHAPE": "SB",
+            "DATATYPE": 2,
+            "SECT_I": {
+                "vSIZE": [
+                    0.75,
+                    3,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                ]
+            }
+        }
+    }
+}

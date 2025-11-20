@@ -1,3 +1,5 @@
+# core\analytical_model_classification\classify_elements.py
+
 from midas import elements, nodes, units, ViewSelected
 
 from .calculate_deck_reference_height import calculate_deck_reference_height
@@ -19,16 +21,38 @@ def classify_elements(
     node_data = nodes.get_all()
     selected_elements = ViewSelected.view_selected_elements()
 
+    print("\n[classify_elements]")
+    print(f"  Total elements in model : {len(elements_in_model)}")
+    print(f"  Selected elements count : {len(selected_elements)}")
+
     filtered_elements = filter_selected_elements(elements_in_model, selected_elements)
+    print(f"  Filtered elements count : {len(filtered_elements)}")
+
     superstructure_sections = get_superstructure_section_ids_with_typeandshape()
     deck_elements = identify_deck_elements(filtered_elements, superstructure_sections)
+
     substructure_elements = {
         eid: elem
         for eid, elem in filtered_elements.items()
         if eid not in deck_elements
     }
 
+    print(f"  Deck elements count     : {len(deck_elements)}")
+    print(f"  Substructure elements   : {len(substructure_elements)}")
+
     reference_height = calculate_deck_reference_height(deck_elements, node_data)
+    print(f"  Deck reference height   : {reference_height!r}")
+
+    # Early exit – useful during debugging if there’s no deck
+    if reference_height is None:
+        print("  NOTE: reference_height is None, skipping pier clustering.")
+        return {
+            "deck_elements": deck_elements,
+            "substructure_elements": substructure_elements,
+            "pier_clusters": {},
+            "deck_reference_height": reference_height,
+            "model_unit": units.get("DIST") or "FT",
+        }
 
     pier_clusters_raw = cluster_vertical_elements(
         substructure_elements,

@@ -3,8 +3,14 @@
 
 # from core.wind_load.compute_section_exposures import exposures_numpy
 
+# from core.analytical_model_classification.get_superstructure_section_ids_with_typeandshape import (
+#     get_superstructure_section_ids_with_typeandshape,
+# )
 
-# import midas as Midas
+# if __name__ == "__main__":
+#     section_ids = get_superstructure_section_ids_with_typeandshape()
+#     print(section_ids)
+
 
 from PySide6.QtWidgets import QApplication
 import sys
@@ -17,10 +23,31 @@ if __name__ == "__main__":
     window.show()
     sys.exit(app.exec())
 
-# # if __name__ == "__main__":
 
-#     amc = AnalyticalModelClassification(pier_link_distance=10.0) 
-#     print(json.dumps(amc.analyze_substructure(), indent=2))
+# from midas.resources.section import Section
+
+# if __name__ == "__main__":
+#     print("before Section.get_all()")
+#     try:
+#         sections = Section.get_all()
+#         print("after Section.get_all()")
+
+#         from pprint import pprint
+#         pprint(sections)
+
+#         # Optional: write to json for VS Code
+#         import json
+#         with open("sections_debug.json", "w") as f:
+#             json.dump(sections, f, indent=4)
+
+#     except Exception as e:
+#         print("ERROR in Section.get_all:", repr(e))
+
+
+# from tests.model_classification import run_classification_diagnostics
+# if __name__ == "__main__":
+#     run_classification_diagnostics()
+
 
 # print(Midas.units.get_all())
 
