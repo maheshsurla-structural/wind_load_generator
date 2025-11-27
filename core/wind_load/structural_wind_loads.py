@@ -17,6 +17,10 @@ from core.wind_load.live_wind_loads import (
     _extract_quadrant_from_name,
     _apply_quadrant_signs,
 )
+
+from core.wind_load.debug_utils import summarize_plan
+
+
 from wind_database import wind_db
 
 
@@ -277,13 +281,14 @@ def apply_structural_wind_loads_to_group(
         print(f"[apply_structural_wind_loads_to_group] No loads for {group_name}")
         return
 
-    # Optional debug: keep if you like
-    print("\n[WS DEBUG] combined_plan rows:", len(combined_plan))
-    print(combined_plan.head(10))
-    print("[WS DEBUG] line_load min/max:",
-          combined_plan["line_load"].min(),
-          combined_plan["line_load"].max())
-    print("[WS DEBUG] unique load_case names:", combined_plan["load_case"].unique())
-    print("[WS DEBUG] unique directions:", combined_plan["load_direction"].unique())
+    # === DEBUG: summary, optional CSV + log ==========================
+    summarize_plan(
+        combined_plan,
+        label=f"WS_{group_name}",
+        dump_csv_per_case=False,   # flip to True when you want CSVs
+        write_log=True,
+    )
+    # ================================================================
 
     apply_beam_load_plan_to_midas(combined_plan)
+

@@ -13,6 +13,28 @@ from midas import elements, get_section_properties
 # PROJECT HOOKS (you still need to implement these)
 # -------------------------------------------------
 
+def _get_next_beam_load_id() -> int:
+    """
+    Look at /db/bmld and return max(ITEM.ID) + 1.
+    If there are no existing beam loads, return 1.
+    """
+    # raw structure: { "115": {"ITEMS": [ {...}, {...} ]},
+    #                  "220": {"ITEMS": [ {...} ]}, ... }
+    raw = BeamLoadResource.get_raw() or {}
+
+    max_id = 0
+    for elem_block in raw.values():
+        items = (elem_block or {}).get("ITEMS", []) or []
+        for item_dict in items:
+            try:
+                i = int(item_dict.get("ID", 0))
+            except (TypeError, ValueError):
+                continue
+            if i > max_id:
+                max_id = i
+
+    return max_id + 1 if max_id > 0 else 1
+
 def _get_element_to_section_map(element_ids: List[int]) -> Dict[int, int]:
     """
     Return {element_id: section_id} for each element in element_ids.
@@ -197,89 +219,127 @@ def build_uniform_load_beam_load_plan_for_group(
 def apply_beam_load_plan_to_midas(
     plan_df: pd.DataFrame,
     *,
-    start_id: int = 1,
-    chunk_size: int = 4000,   # NEW: limit number of BMLD rows per request
+    start_id: int | None = None,   # allow None
+    chunk_size: int = 4000,        # limit number of BMLD rows per request
 ) -> pd.DataFrame:
     """
     Take a plan DataFrame with columns
         ['element_id', 'line_load', 'load_case', 'load_direction', 'load_group']
     and send them as BeamLoadItem specs to MIDAS.
 
-    To avoid MIDAS silently dropping very large JSON payloads, the specs are
-    sent in chunks of `chunk_size` items.
+    IMPORTANT:
+        - Chunking is done **between load cases only**.
+        - A single load_case will never be split across two requests, even if
+          that means temporarily exceeding `chunk_size` for that one request.
     """
 
     if plan_df is None or plan_df.empty:
         print("[apply_beam_load_plan_to_midas] plan_df is empty; nothing to send.")
         return plan_df
 
+    # Decide where to start IDs
+    if start_id is None:
+        start_id = _get_next_beam_load_id()
+
+    # Sort so grouping is deterministic
+    plan_df = plan_df.sort_values(
+        ["load_case", "load_direction", "element_id"],
+        kind="stable",
+    ).reset_index(drop=True)
+
     total_rows = len(plan_df)
     print(
-        f"[apply_beam_load_plan_to_midas] Preparing {total_rows} beam loads "
-        f"in chunks of {chunk_size}..."
+        f"[apply_beam_load_plan_to_midas] Starting IDs at {start_id}, "
+        f"preparing {total_rows} beam loads in chunks of ~{chunk_size} rows, "
+        f"but never splitting a load case..."
     )
 
-    specs: List[Tuple[int, BeamLoadItem]] = []
     next_id = start_id
     sent = 0
 
-    for _, row in plan_df.iterrows():
-        element_id = int(row["element_id"])
-        q = float(row["line_load"])
-        if abs(q) < 1e-9:
-            continue
+    # Current chunk of specs we are building up (may contain several load cases)
+    current_specs: list[tuple[int, BeamLoadItem]] = []
 
-        lcname = str(row["load_case"])
-        ldgr = str(row["load_group"])
-        direction = str(row["load_direction"])
-
-        # Eccentricity (ft). If not present, assume 0.
-        ecc = float(row.get("eccentricity", 0.0))
-        use_ecc = abs(ecc) > 1e-9
-
-        # For horizontal wind (LX/LY) we usually use vertical offset → "GZ"
-        ecc_dir = "GZ"
-
-        item = BeamLoadItem(
-            ID=next_id,
-            LCNAME=lcname,
-            GROUP_NAME=ldgr,
-            CMD="BEAM",
-            TYPE="UNILOAD",
-            DIRECTION=direction,
-            USE_PROJECTION=False,
-            USE_ECCEN=use_ecc,
-            # full-length uniform load
-            D=[0, 1, 0, 0],
-            P=[q, q, 0, 0],
-            # eccentricity block
-            ECCEN_TYPE=1,      # distance type
-            ECCEN_DIR=ecc_dir, # axis of eccentricity
-            I_END=ecc,         # ecc at I-end
-            J_END=ecc,         # ecc at J-end
-        )
-
-        specs.append((element_id, item))
-        next_id += 1
-
-        # If we've accumulated a full chunk, flush it to MIDAS
-        if len(specs) >= chunk_size:
-            print(
-                f"[apply_beam_load_plan_to_midas] "
-                f"Sending chunk of {len(specs)} specs to MIDAS..."
-            )
-            BeamLoadResource.create_from_specs(specs)
-            sent += len(specs)
-            specs.clear()
-
-    # Flush any remaining specs
-    if specs:
+    def _flush_current(reason: str = ""):
+        nonlocal current_specs, sent
+        if not current_specs:
+            return
         print(
             f"[apply_beam_load_plan_to_midas] "
-            f"Sending final chunk of {len(specs)} specs to MIDAS..."
+            f"Sending chunk of {len(current_specs)} specs to MIDAS..."
+            + (f" ({reason})" if reason else "")
         )
-        BeamLoadResource.create_from_specs(specs)
-        sent += len(specs)
+        BeamLoadResource.create_from_specs(current_specs)
+        sent += len(current_specs)
+        current_specs = []
+
+    # Group by load_case so we never split a case across requests
+    for lcname, lc_df in plan_df.groupby("load_case", sort=False):
+        # Build all specs for this load case
+        lc_specs: list[tuple[int, BeamLoadItem]] = []
+
+        for _, row in lc_df.iterrows():
+            element_id = int(row["element_id"])
+            q = float(row["line_load"])
+            if abs(q) < 1e-9:
+                continue  # skip ~zero loads
+
+            ldgr = str(row["load_group"])
+            direction = str(row["load_direction"])
+
+            ecc = float(row.get("eccentricity", 0.0))
+            use_ecc = abs(ecc) > 1e-9
+            ecc_dir = "GZ"  # vertical offset for horizontal wind
+
+            item = BeamLoadItem(
+                ID=next_id,
+                LCNAME=str(lcname),
+                GROUP_NAME=ldgr,
+                CMD="BEAM",
+                TYPE="UNILOAD",
+                DIRECTION=direction,
+                USE_PROJECTION=False,
+                USE_ECCEN=use_ecc,
+                # full-length uniform load
+                D=[0, 1, 0, 0],
+                P=[q, q, 0, 0],
+                # eccentricity block
+                ECCEN_TYPE=1,      # distance type
+                ECCEN_DIR=ecc_dir, # axis of eccentricity
+                I_END=ecc,
+                J_END=ecc,
+            )
+
+            lc_specs.append((element_id, item))
+            next_id += 1
+
+        if not lc_specs:
+            print(
+                f"[apply_beam_load_plan_to_midas] "
+                f"All loads ~0 for load case {lcname}; skipping."
+            )
+        else:
+            # If adding this whole load case would push us over chunk_size,
+            # flush the current chunk FIRST (so we only break between cases).
+            if current_specs and (len(current_specs) + len(lc_specs) > chunk_size):
+                _flush_current(reason=f"before load case {lcname}")
+
+            # If this single load case itself is larger than chunk_size,
+            # we STILL send it as a single request (do not split it).
+            if len(lc_specs) > chunk_size:
+                print(
+                    f"[apply_beam_load_plan_to_midas] "
+                    f"Load case {lcname} has {len(lc_specs)} specs "
+                    f"(> chunk_size={chunk_size}); sending in one large request."
+                )
+                BeamLoadResource.create_from_specs(lc_specs)
+                sent += len(lc_specs)
+            else:
+                # Otherwise, accumulate into the current chunk
+                current_specs.extend(lc_specs)
+
+    # Flush any remaining load cases
+    _flush_current(reason="final")
 
     print(
         f"[apply_beam_load_plan_to_midas] Done. Sent {sent} specs "
@@ -287,3 +347,5 @@ def apply_beam_load_plan_to_midas(
     )
 
     return plan_df
+
+

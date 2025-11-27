@@ -335,14 +335,43 @@ class MainWindow(QMainWindow):
 
 
     def _on_assign_wind_loads_clicked(self) -> None:
-        """Assign LIVE wind (WL) and STRUCTURAL wind (WS) loads to the deck group."""
+        """
+        Assign LIVE wind (WL) and STRUCTURAL wind (WS) loads to the deck group.
+
+        WL and WS are each delegated to their own helpers:
+            - apply_live_wind_loads_to_group(...)
+            - apply_structural_wind_loads_to_group(...)
+
+        Those helpers are responsible for:
+            - building the beam-load plan
+            - running debug summaries / CSV dumps
+            - sending the loads to MIDAS via apply_beam_load_plan_to_midas()
+        """
         try:
             # ----------------- Resolve deck group name -----------------
             naming = getattr(self.control_model, "naming", None)
             base_deck_name = getattr(naming, "deck_name", None) or "Deck"
             deck_group_name = f"{base_deck_name.strip()} Elements"
 
-            plans: list[pd.DataFrame] = []
+            # Quick sanity check: does the group exist and have elements?
+            try:
+                from midas.resources.structural_group import StructuralGroup
+                deck_elements = StructuralGroup.get_elements_by_name(deck_group_name)
+                if not deck_elements:
+                    QMessageBox.warning(
+                        self,
+                        "Deck Group Not Found",
+                        f"The structural group '{deck_group_name}' has no elements.\n"
+                        "Please generate wind data first, then try again.",
+                    )
+                    return
+            except Exception:
+                # If the API call itself fails, we still try to proceed and let
+                # downstream code report a more detailed error.
+                deck_elements = []
+
+            wl_applied = False
+            ws_applied = False
 
             # ============================================================
             # 1) LIVE WIND (WL)
@@ -361,11 +390,8 @@ class MainWindow(QMainWindow):
             )
 
             if live_components_df is not None and not live_components_df.empty:
-                wl_plan = build_live_wind_beam_load_plan_for_group(
-                    deck_group_name, live_components_df
-                )
-                if wl_plan is not None and not wl_plan.empty:
-                    plans.append(wl_plan)
+                apply_live_wind_loads_to_group(deck_group_name, live_components_df)
+                wl_applied = True
             else:
                 print(
                     f"[_on_assign_wind_loads_clicked] "
@@ -376,13 +402,13 @@ class MainWindow(QMainWindow):
             # 2) STRUCTURAL WIND (WS)
             # ============================================================
             if wind_db.wind_pressures.empty:
+                # We do NOT bail out entirely: WL may already have been applied.
                 QMessageBox.warning(
                     self,
                     "Wind Pressures Missing",
                     "Wind pressures have not been generated yet.\n"
-                    "Please click 'Generate Wind Data' before assigning structural wind loads.",
+                    "Click 'Generate Wind Data' before assigning structural wind loads.",
                 )
-                # We still allow WL plan (if any) to be applied below.
             else:
                 skew = self.control_model.loads.skew  # SkewCoefficients
                 raw_ws_df = getattr(wind_db, "ws_cases", None)
@@ -404,38 +430,32 @@ class MainWindow(QMainWindow):
                 )
 
                 if ws_components_df is not None and not ws_components_df.empty:
-                    ws_plan = build_structural_wind_beam_load_plan_for_group(
+                    apply_structural_wind_loads_to_group(
                         group_name=deck_group_name,
                         components_df=ws_components_df,
                         exposure_axis="y",   # local depth is Y
                     )
-                    if ws_plan is not None and not ws_plan.empty:
-                        plans.append(ws_plan)
+                    ws_applied = True
                 else:
                     print(
                         f"[_on_assign_wind_loads_clicked] "
-                        f"No WS components for '{deck_group_name}'."
+                        f"No STRUCTURAL wind components for '{deck_group_name}'."
                     )
 
             # ============================================================
-            # 3) COMBINE & APPLY
+            # 3) Final status message
             # ============================================================
-            if not plans:
-                print("[_on_assign_wind_loads_clicked] No WL or WS loads to apply.")
-                return
+            if wl_applied and ws_applied:
+                msg = "Live wind (WL) and structural wind (WS) loads assigned."
+            elif wl_applied:
+                msg = "Live wind (WL) loads assigned. WS was skipped."
+            elif ws_applied:
+                msg = "Structural wind (WS) loads assigned. WL was skipped."
+            else:
+                msg = "No wind loads were assigned (no WL/WS components)."
 
-            combined_plan = pd.concat(plans, ignore_index=True)
-            combined_plan.sort_values(["load_case", "element_id"], inplace=True)
-            combined_plan.reset_index(drop=True, inplace=True)
-
-            print(
-                f"[_on_assign_wind_loads_clicked] "
-                f"Applying combined WL+WS plan ({len(combined_plan)} rows) "
-                f"to '{deck_group_name}'"
-            )
-
-            apply_beam_load_plan_to_midas(combined_plan)
-            self.statusBar().showMessage("Wind loads (WL + WS) assigned.", 4000)
+            print(f"[_on_assign_wind_loads_clicked] {msg}")
+            self.statusBar().showMessage(msg, 4000)
 
         except Exception as exc:
             print("Error assigning wind loads:", exc)
@@ -444,4 +464,5 @@ class MainWindow(QMainWindow):
                 "Error",
                 f"An error occurred while assigning wind loads:\n{exc}",
             )
+
 

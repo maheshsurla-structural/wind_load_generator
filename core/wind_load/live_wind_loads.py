@@ -10,6 +10,7 @@ from core.wind_load.beam_load import (
     build_uniform_load_beam_load_plan_for_group,
     apply_beam_load_plan_to_midas,
 )
+from core.wind_load.debug_utils import summarize_plan
 
 from midas.resources.structural_group import StructuralGroup
 from midas.resources.element_beam_load import BeamLoadItem, BeamLoadResource
@@ -237,6 +238,16 @@ def apply_live_wind_loads_to_group(group_name: str, components_df: pd.DataFrame)
         print(f"[apply_live_wind_loads_to_group] No loads for group {group_name}")
         return
 
+    # === DEBUG: summary, optional CSV + log ==========================
+    summarize_plan(
+        combined_plan,
+        label=f"WL_{group_name}",
+        dump_csv_per_case=True,   # set True if you want per-case CSVs
+        write_log=True,
+    )
+    # ================================================================
+
     apply_beam_load_plan_to_midas(combined_plan)
+
 
 
