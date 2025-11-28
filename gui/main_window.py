@@ -41,6 +41,10 @@ from core.wind_load.structural_wind_loads import (
     build_structural_wind_beam_load_plan_for_group,   # NEW
 )
 
+from core.wind_load.substructure_wind_loads import (
+    build_substructure_wind_components_table,
+    apply_substructure_wind_loads_to_group,
+)
 
 
 import pandas as pd
@@ -350,123 +354,357 @@ class MainWindow(QMainWindow):
             self.units.set_force(units_cfg["force"])
 
 
+    # def _on_assign_wind_loads_clicked(self) -> None:
+    #     """
+    #     Assign LIVE wind (WL) and STRUCTURAL wind (WS) loads to the deck group.
+
+    #     WL and WS are each delegated to their own helpers:
+    #         - apply_live_wind_loads_to_group(...)
+    #         - apply_structural_wind_loads_to_group(...)
+
+    #     Those helpers are responsible for:
+    #         - building the beam-load plan
+    #         - running debug summaries / CSV dumps
+    #         - sending the loads to MIDAS via apply_beam_load_plan_to_midas()
+    #     """
+    #     try:
+    #         # ----------------- Resolve deck group name -----------------
+    #         naming = getattr(self.control_model, "naming", None)
+    #         base_deck_name = getattr(naming, "deck_name", None) or "Deck"
+    #         deck_group_name = f"{base_deck_name.strip()} Elements"
+
+    #         # Quick sanity check: does the group exist and have elements?
+    #         try:
+    #             from midas.resources.structural_group import StructuralGroup
+    #             deck_elements = StructuralGroup.get_elements_by_name(deck_group_name)
+    #             if not deck_elements:
+    #                 QMessageBox.warning(
+    #                     self,
+    #                     "Deck Group Not Found",
+    #                     f"The structural group '{deck_group_name}' has no elements.\n"
+    #                     "Please generate wind data first, then try again.",
+    #                 )
+    #                 return
+    #         except Exception:
+    #             # If the API call itself fails, we still try to proceed and let
+    #             # downstream code report a more detailed error.
+    #             deck_elements = []
+
+    #         wl_applied = False
+    #         ws_applied = False
+
+    #         # ============================================================
+    #         # 1) LIVE WIND (WL)
+    #         # ============================================================
+    #         wl = self.control_model.loads.wind_live  # WindLiveLoadCoefficients
+
+    #         wl_df = getattr(wind_db, "wl_cases", None)
+    #         if wl_df is None:
+    #             wl_df = pd.DataFrame()
+
+    #         live_components_df = build_live_wind_components_table(
+    #             angles=wl.angles,
+    #             transverse=wl.transverse,
+    #             longitudinal=wl.longitudinal,
+    #             wl_cases_df=wl_df,
+    #         )
+
+    #         if live_components_df is not None and not live_components_df.empty:
+    #             apply_live_wind_loads_to_group(deck_group_name, live_components_df)
+    #             wl_applied = True
+    #         else:
+    #             print(
+    #                 f"[_on_assign_wind_loads_clicked] "
+    #                 f"No LIVE wind components for '{deck_group_name}'."
+    #             )
+
+    #         # ============================================================
+    #         # 2) STRUCTURAL WIND (WS)
+    #         # ============================================================
+    #         if wind_db.wind_pressures.empty:
+    #             # We do NOT bail out entirely: WL may already have been applied.
+    #             QMessageBox.warning(
+    #                 self,
+    #                 "Wind Pressures Missing",
+    #                 "Wind pressures have not been generated yet.\n"
+    #                 "Click 'Generate Wind Data' before assigning structural wind loads.",
+    #             )
+    #         else:
+    #             skew = self.control_model.loads.skew  # SkewCoefficients
+    #             raw_ws_df = getattr(wind_db, "ws_cases", None)
+    #             if raw_ws_df is None:
+    #                 raw_ws_df = pd.DataFrame()
+
+    #             if {"Case", "Angle", "Value"}.issubset(set(raw_ws_df.columns)):
+    #                 ws_df = raw_ws_df
+    #             else:
+    #                 ws_df = pd.DataFrame(columns=["Case", "Angle", "Value"])
+
+    #             ws_components_df = build_structural_wind_components_table(
+    #                 group_name=deck_group_name,
+    #                 angles=skew.angles,
+    #                 transverse=skew.transverse,
+    #                 longitudinal=skew.longitudinal,
+    #                 ws_cases_df=ws_df,
+    #                 wind_pressures_df=wind_db.wind_pressures,
+    #             )
+
+    #             if ws_components_df is not None and not ws_components_df.empty:
+    #                 apply_structural_wind_loads_to_group(
+    #                     group_name=deck_group_name,
+    #                     components_df=ws_components_df,
+    #                     exposure_axis="y",   # local depth is Y
+    #                 )
+    #                 ws_applied = True
+    #             else:
+    #                 print(
+    #                     f"[_on_assign_wind_loads_clicked] "
+    #                     f"No STRUCTURAL wind components for '{deck_group_name}'."
+    #                 )
+
+    #         # ============================================================
+    #         # 3) Final status message
+    #         # ============================================================
+    #         if wl_applied and ws_applied:
+    #             msg = "Live wind (WL) and structural wind (WS) loads assigned."
+    #         elif wl_applied:
+    #             msg = "Live wind (WL) loads assigned. WS was skipped."
+    #         elif ws_applied:
+    #             msg = "Structural wind (WS) loads assigned. WL was skipped."
+    #         else:
+    #             msg = "No wind loads were assigned (no WL/WS components)."
+
+    #         print(f"[_on_assign_wind_loads_clicked] {msg}")
+    #         self.statusBar().showMessage(msg, 4000)
+
+    #     except Exception as exc:
+    #         print("Error assigning wind loads:", exc)
+    #         QMessageBox.critical(
+    #             self,
+    #             "Error",
+    #             f"An error occurred while assigning wind loads:\n{exc}",
+    #         )
+
+
     def _on_assign_wind_loads_clicked(self) -> None:
         """
-        Assign LIVE wind (WL) and STRUCTURAL wind (WS) loads to the deck group.
+        Assign LIVE wind (WL) and STRUCTURAL wind (WS) loads.
 
-        WL and WS are each delegated to their own helpers:
-            - apply_live_wind_loads_to_group(...)
-            - apply_structural_wind_loads_to_group(...)
+        New rules (member-type based):
 
-        Those helpers are responsible for:
-            - building the beam-load plan
-            - running debug summaries / CSV dumps
-            - sending the loads to MIDAS via apply_beam_load_plan_to_midas()
+            - For every structural group with Member Type = 'Deck':
+                  → apply LIVE wind (WL)  + WS using deck formulas
+
+            - For every structural group with Member Type = 'Pier':
+                  → apply WS using substructure (pier) formulas (no WL)
         """
         try:
-            # ----------------- Resolve deck group name -----------------
-            naming = getattr(self.control_model, "naming", None)
-            base_deck_name = getattr(naming, "deck_name", None) or "Deck"
-            deck_group_name = f"{base_deck_name.strip()} Elements"
-
-            # Quick sanity check: does the group exist and have elements?
+            # ============================================================
+            # 0) Get structural groups from DB (for Member Type)
+            # ============================================================
             try:
-                from midas.resources.structural_group import StructuralGroup
-                deck_elements = StructuralGroup.get_elements_by_name(deck_group_name)
-                if not deck_elements:
-                    QMessageBox.warning(
-                        self,
-                        "Deck Group Not Found",
-                        f"The structural group '{deck_group_name}' has no elements.\n"
-                        "Please generate wind data first, then try again.",
-                    )
-                    return
+                groups_raw = getattr(wind_db, "structural_groups", None)
             except Exception:
-                # If the API call itself fails, we still try to proceed and let
-                # downstream code report a more detailed error.
-                deck_elements = []
+                groups_raw = None
 
-            wl_applied = False
-            ws_applied = False
+            # wind_db.structural_groups is a dict: {group_name: params_dict}
+            if not groups_raw:
+                QMessageBox.warning(
+                    self,
+                    "No Structural Groups",
+                    "No structural groups found in the wind database.\n"
+                    "Generate or edit wind data, then try again.",
+                )
+                return
+
+            if isinstance(groups_raw, dict):
+                # Convert dict → DataFrame with 'Group' column
+                rows = []
+                for name, params in groups_raw.items():
+                    params = params or {}
+                    row = {"Group": name}
+                    row.update(params)
+                    rows.append(row)
+                groups_df = pd.DataFrame(rows)
+            else:
+                # If at some point you change it to already be a DataFrame
+                groups_df = groups_raw
+
+            if groups_df is None or groups_df.empty:
+                QMessageBox.warning(
+                    self,
+                    "No Structural Groups",
+                    "No structural groups found in the wind database.\n"
+                    "Generate or edit wind data, then try again.",
+                )
+                return
+
+            if "Group" not in groups_df.columns:
+                QMessageBox.critical(
+                    self,
+                    "Invalid Structural Groups Table",
+                    "The structural_groups table must contain a 'Group' column.",
+                )
+                return
+
+            # If Member Type is missing for some rows, treat as Deck by default
+            if "Member Type" not in groups_df.columns:
+                groups_df["Member Type"] = "Deck"
+
+            # Separate groups by member type
+            deck_groups = (
+                groups_df.loc[groups_df["Member Type"] == "Deck", "Group"]
+                .dropna()
+                .unique()
+            )
+            pier_groups = (
+                groups_df.loc[groups_df["Member Type"] == "Pier", "Group"]
+                .dropna()
+                .unique()
+            )
+
+            wl_applied_any = False
+            ws_deck_any    = False
+            ws_pier_any    = False
 
             # ============================================================
-            # 1) LIVE WIND (WL)
+            # 1) Get global WL / WS definitions (same for all groups)
             # ============================================================
-            wl = self.control_model.loads.wind_live  # WindLiveLoadCoefficients
+            wl = self.control_model.loads.wind_live   # WL coefficients
+            skew = self.control_model.loads.skew      # WS skew coefficients
 
+            # WL cases table
             wl_df = getattr(wind_db, "wl_cases", None)
             if wl_df is None:
                 wl_df = pd.DataFrame()
 
-            live_components_df = build_live_wind_components_table(
-                angles=wl.angles,
-                transverse=wl.transverse,
-                longitudinal=wl.longitudinal,
-                wl_cases_df=wl_df,
-            )
+            # WS cases table
+            raw_ws_df = getattr(wind_db, "ws_cases", None)
+            if raw_ws_df is None:
+                raw_ws_df = pd.DataFrame()
 
-            if live_components_df is not None and not live_components_df.empty:
-                apply_live_wind_loads_to_group(deck_group_name, live_components_df)
-                wl_applied = True
+            if {"Case", "Angle", "Value"}.issubset(set(raw_ws_df.columns)):
+                ws_df = raw_ws_df
             else:
-                print(
-                    f"[_on_assign_wind_loads_clicked] "
-                    f"No LIVE wind components for '{deck_group_name}'."
-                )
+                ws_df = pd.DataFrame(columns=["Case", "Angle", "Value"])
 
-            # ============================================================
-            # 2) STRUCTURAL WIND (WS)
-            # ============================================================
+            # Need pressures for all WS operations
             if wind_db.wind_pressures.empty:
-                # We do NOT bail out entirely: WL may already have been applied.
                 QMessageBox.warning(
                     self,
                     "Wind Pressures Missing",
                     "Wind pressures have not been generated yet.\n"
                     "Click 'Generate Wind Data' before assigning structural wind loads.",
                 )
+                # We still allow WL-on-deck to proceed.
+                allow_ws = False
             else:
-                skew = self.control_model.loads.skew  # SkewCoefficients
-                raw_ws_df = getattr(wind_db, "ws_cases", None)
-                if raw_ws_df is None:
-                    raw_ws_df = pd.DataFrame()
+                allow_ws = True
 
-                if {"Case", "Angle", "Value"}.issubset(set(raw_ws_df.columns)):
-                    ws_df = raw_ws_df
-                else:
-                    ws_df = pd.DataFrame(columns=["Case", "Angle", "Value"])
+            # ============================================================
+            # 2) For each DECK group: WL + WS (deck)
+            # ============================================================
+            for group_name in deck_groups:
+                group_name = str(group_name).strip()
+                if not group_name:
+                    continue
 
-                ws_components_df = build_structural_wind_components_table(
-                    group_name=deck_group_name,
-                    angles=skew.angles,
-                    transverse=skew.transverse,
-                    longitudinal=skew.longitudinal,
-                    ws_cases_df=ws_df,
-                    wind_pressures_df=wind_db.wind_pressures,
+                # Sanity check: does group have any elements in MIDAS?
+                try:
+                    from midas.resources.structural_group import StructuralGroup
+                    elem_ids = StructuralGroup.get_elements_by_name(group_name)
+                except Exception:
+                    elem_ids = []
+
+                if not elem_ids:
+                    print(
+                        f"[_on_assign_wind_loads_clicked] "
+                        f"Deck group '{group_name}' has no elements in MIDAS; skipping."
+                    )
+                    continue
+
+                # ---------- 2a) LIVE WIND (WL) on this deck group ----------
+                live_components_df = build_live_wind_components_table(
+                    angles=wl.angles,
+                    transverse=wl.transverse,
+                    longitudinal=wl.longitudinal,
+                    wl_cases_df=wl_df,
                 )
 
-                if ws_components_df is not None and not ws_components_df.empty:
-                    apply_structural_wind_loads_to_group(
-                        group_name=deck_group_name,
-                        components_df=ws_components_df,
-                        exposure_axis="y",   # local depth is Y
-                    )
-                    ws_applied = True
+                if live_components_df is not None and not live_components_df.empty:
+                    apply_live_wind_loads_to_group(group_name, live_components_df)
+                    wl_applied_any = True
+                    print(f"[WL] Applied live wind to deck group '{group_name}'.")
                 else:
                     print(
                         f"[_on_assign_wind_loads_clicked] "
-                        f"No STRUCTURAL wind components for '{deck_group_name}'."
+                        f"No LIVE wind components for deck group '{group_name}'."
                     )
 
+                # ---------- 2b) STRUCTURAL WIND (WS) – deck formulas ------
+                if allow_ws:
+                    ws_components_deck = build_structural_wind_components_table(
+                        group_name=group_name,
+                        angles=skew.angles,
+                        transverse=skew.transverse,
+                        longitudinal=skew.longitudinal,
+                        ws_cases_df=ws_df,
+                        wind_pressures_df=wind_db.wind_pressures,
+                    )
+
+                    if ws_components_deck is not None and not ws_components_deck.empty:
+                        apply_structural_wind_loads_to_group(
+                            group_name=group_name,
+                            components_df=ws_components_deck,
+                            exposure_axis="y",   # depth = local Y
+                        )
+                        ws_deck_any = True
+                        print(f"[WS_DECK] Applied structural wind to deck group '{group_name}'.")
+                    else:
+                        print(
+                            f"[_on_assign_wind_loads_clicked] "
+                            f"No STRUCTURAL wind components for deck group '{group_name}'."
+                        )
+
             # ============================================================
-            # 3) Final status message
+            # 3) For each PIER group: WS using substructure formulas
             # ============================================================
-            if wl_applied and ws_applied:
-                msg = "Live wind (WL) and structural wind (WS) loads assigned."
-            elif wl_applied:
-                msg = "Live wind (WL) loads assigned. WS was skipped."
-            elif ws_applied:
-                msg = "Structural wind (WS) loads assigned. WL was skipped."
+            if allow_ws:
+                for group_name in pier_groups:
+                    group_name = str(group_name).strip()
+                    if not group_name:
+                        continue
+
+                    sub_components_df = build_substructure_wind_components_table(
+                        group_name=group_name,
+                        ws_cases_df=ws_df,
+                        wind_pressures_df=wind_db.wind_pressures,
+                    )
+
+                    if sub_components_df is None or sub_components_df.empty:
+                        print(
+                            f"[WS_PIER] No components for pier group '{group_name}'."
+                        )
+                        continue
+
+                    apply_substructure_wind_loads_to_group(
+                        group_name=group_name,
+                        components_df=sub_components_df,
+                        extra_exposure_y_default=0.0,
+                        extra_exposure_y_by_id=None,
+                    )
+                    ws_pier_any = True
+                    print(f"[WS_PIER] Applied structural wind to pier group '{group_name}'.")
+
+            # ============================================================
+            # 4) Final status message
+            # ============================================================
+            if wl_applied_any and (ws_deck_any or ws_pier_any):
+                msg = "WL applied to deck groups; WS applied to deck and/or pier groups."
+            elif wl_applied_any:
+                msg = "Live wind (WL) loads assigned to deck groups. WS was skipped."
+            elif ws_deck_any or ws_pier_any:
+                msg = "Structural wind (WS) loads assigned to deck and/or pier groups."
             else:
                 msg = "No wind loads were assigned (no WL/WS components)."
 
@@ -480,5 +718,4 @@ class MainWindow(QMainWindow):
                 "Error",
                 f"An error occurred while assigning wind loads:\n{exc}",
             )
-
 
