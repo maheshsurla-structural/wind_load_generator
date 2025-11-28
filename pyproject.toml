@@ -8,6 +8,7 @@ dependencies = [
     "midas-civil>=1.1.0",
     "pandas>=2.3.3",
     "pyside6>=6.9.3",
+    "pytest>=9.0.1",
     "scikit-learn>=1.7.2",
 ]
 

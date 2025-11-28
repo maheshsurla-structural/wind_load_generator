@@ -87,3 +87,49 @@ if __name__ == "__main__":
 # element_ids = StructuralGroup.get_elements_by_name("Deck Elements")
 
 # print(element_ids)
+
+
+# main.py
+
+# import sys
+# from pathlib import Path
+
+# ROOT = Path(__file__).resolve().parent
+# if str(ROOT) not in sys.path:
+#     sys.path.insert(0, str(ROOT))
+
+
+# def run_unit_tests():
+#     import pytest
+
+#     print("\n=== Running substructure wind UNIT TESTS ===")
+#     result = pytest.main(["-q", "tests/test_substructure_wind_components.py"])
+#     if result != 0:
+#         print("\n❌ Unit tests failed.")
+#         sys.exit(result)
+#     print("✅ Unit tests passed.")
+
+
+# def run_substructure_demo():
+#     """
+#     Run the integration-style demo (no write to MIDAS unless you flip APPLY_TO_MIDAS).
+#     """
+#     from tests.run_substructure_wind_demo import run_demo
+
+#     print("\n=== Running substructure wind DEMO ===")
+#     run_demo()
+#     print("=== Demo finished ===\n")
+
+
+# if __name__ == "__main__":
+#     RUN_TESTS = True
+#     RUN_DEMO = True
+
+#     if RUN_TESTS:
+#         run_unit_tests()
+
+#     if RUN_DEMO:
+#         run_substructure_demo()
+
+#     print("\nAll done from main.py ✅")
+

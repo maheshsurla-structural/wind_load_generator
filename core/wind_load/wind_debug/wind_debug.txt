@@ -409,3 +409,11 @@
     WS_ULS_V_Ang_60_Q2: 159 elements
     WS_ULS_V_Ang_60_Q3: 159 elements
     WS_ULS_V_Ang_60_Q4: 159 elements
+[2025-11-28 10:01:28] WS_SUB_DEMO_Pier 1_Pier: rows=2, cases=1
+    WS_ULS_III_Ang_15_Q1: 1 elements
+[2025-11-28 10:01:31] WS_SUB_Pier 1_Pier: rows=2, cases=1
+    WS_ULS_III_Ang_15_Q1: 1 elements
+[2025-11-28 10:02:59] WS_SUB_DEMO_Pier 1_Pier: rows=2, cases=1
+    WS_ULS_III_Ang_15_Q1: 1 elements
+[2025-11-28 10:03:01] WS_SUB_Pier 1_Pier: rows=2, cases=1
+    WS_ULS_III_Ang_15_Q1: 1 elements
