@@ -18,6 +18,15 @@ from wind_database import wind_db
 
 log = logging.getLogger(__name__)
 
+# Canonical member types used throughout the app
+MEMBER_TYPES = [
+    "Deck",
+    "Pier Cap",
+    "Pier",
+    "Substructure – Above Deck",
+]
+
+
 
 # --------------------------- Data Models ---------------------------
 
@@ -96,7 +105,9 @@ class WindLoadInput(QDialog, UnitAwareMixin):
         self.drag_coeff.setValidator(QDoubleValidator(0.0, 5.0, 2, self))
 
         self.member_type = QComboBox()
-        self.member_type.addItems(["Girders", "Trusses, Columns, and Arches"])
+        self.member_type.addItems(MEMBER_TYPES)
+        self.member_type.setCurrentText("Deck")
+
 
         form.addRow("Group Name:", self.group_name_input)
         form.addRow("Wind Speed (mph):", self.wind_speed)
@@ -156,6 +167,11 @@ class WindLoadInput(QDialog, UnitAwareMixin):
     def _populate_from_db(self):
         self.model.groups.clear()
         for name, params in (wind_db.structural_groups or {}).items():
+            raw_member_type = str(params.get("Member Type", "Deck"))
+
+            # Basic validation: if something weird comes in, fall back to Deck
+            member_type = raw_member_type if raw_member_type in MEMBER_TYPES else "Deck"
+
             g = WindGroup(
                 name=name,
                 wind_speed=float(params.get("Wind Speed", 0.0)),
@@ -163,10 +179,12 @@ class WindLoadInput(QDialog, UnitAwareMixin):
                 structure_height=float(params.get("Structure Height", 0.0)),
                 gust_factor=float(params.get("Gust Factor", 1.0)),
                 drag_coefficient=float(params.get("Drag Coefficient", 1.0)),
-                member_type=str(params.get("Member Type", "Girders")),
+                member_type=member_type,
             )
             self.model.groups[name] = g
+
         self._refresh_table()
+
 
     def _refresh_table(self):
         self.table_model.setRowCount(0)
