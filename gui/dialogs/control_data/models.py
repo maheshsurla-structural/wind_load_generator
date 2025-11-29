@@ -120,10 +120,15 @@ class WindLiveLoadCoefficients:
 class LoadSettings:
     """Wind or aerodynamic load-related coefficients."""
     gust_factor: float = 1.00
-    drag_coefficient: float = 1.20
-    crash_barrier_depth: float = 0.0            # <-- NEW (length)
+
+    # Split drag coefficient
+    superstructure_drag_coefficient: float = 1.30
+    substructure_drag_coefficient: float = 1.60
+
+    crash_barrier_depth: float = 0.0            # length
     skew: SkewCoefficients = field(default_factory=SkewCoefficients)
     wind_live: WindLiveLoadCoefficients = field(default_factory=WindLiveLoadCoefficients)
+
 
 
 # --------------------------- Master control model (existing API retained) ---------------------------
@@ -139,12 +144,13 @@ class ControlDataModel:
 
     def to_dict(self) -> dict:
         return {
-            "version": 6,  # bump: wind naming simplification + wind live-load table
+            "version": 7,  # bump: split drag coefficient into super/sub
             "geometry": asdict(self.geometry),
-            "naming": asdict(self.naming),   # includes nested 'wind'
+            "naming": asdict(self.naming),
             "loads": asdict(self.loads),
             "units": {"length": self.length_unit, "force": self.force_unit},
         }
+
 
     @staticmethod
     def from_dict(data: dict) -> "ControlDataModel":
@@ -205,9 +211,10 @@ class ControlDataModel:
             ),
 
             loads=LoadSettings(
-                gust_factor=float(loads_in.get("gust_factor", 1.00) or 1.00),
-                drag_coefficient=float(loads_in.get("drag_coefficient", 1.20) or 1.20),
-                crash_barrier_depth=float(loads_in.get("crash_barrier_depth", 0.0) or 0.0),
+                gust_factor=float(loads_in.get("gust_factor", 1.00)),
+                superstructure_drag_coefficient=float(loads_in.get("superstructure_drag_coefficient", 1.30)),
+                substructure_drag_coefficient=float(loads_in.get("substructure_drag_coefficient", 1.60)),
+                crash_barrier_depth=float(loads_in.get("crash_barrier_depth", 0.0)),
                 skew=SkewCoefficients(transverse=t, longitudinal=g),
                 wind_live=WindLiveLoadCoefficients(
                     transverse=wl_t,

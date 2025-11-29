@@ -60,7 +60,7 @@ class ConfigManager:
 
     def load_control_data(self) -> dict[str, Any]:
         default = {
-            "version": 6,
+            "version": 7,
             "geometry": {"reference_height": 0.0, "pier_radius": 10.0},
             "naming": {
                 "deck_name": "Deck",
@@ -78,7 +78,8 @@ class ConfigManager:
             },
             "loads": {
                 "gust_factor": 1.00,
-                "drag_coefficient": 1.20,
+                "superstructure_drag_coefficient": 1.30,
+                "substructure_drag_coefficient": 1.60,
                 "crash_barrier_depth": 0.0,
                 # NEW: skew defaults (fixed-angle table: 0,15,30,45,60)
                 "skew": {
@@ -95,7 +96,7 @@ class ConfigManager:
         return self.load(
             "control_data.json",
             default=default,
-            version=6,
+            version=7,
             schema_name="control_data.schema.json",
             migrate=self._migrate_control_data,
         )
@@ -137,8 +138,25 @@ class ConfigManager:
             f = "KIPS"
         units["force"] = f
 
-        # ---- Ensure loads.skew is present and valid (5 values each) ----
+
         loads = payload.setdefault("loads", {})
+
+        # ---- Ensure split drag coefficients exist and are numeric ----
+        try:
+            loads["superstructure_drag_coefficient"] = float(
+                loads.get("superstructure_drag_coefficient", 1.30) or 1.30
+            )
+        except Exception:
+            loads["superstructure_drag_coefficient"] = 1.30
+
+        try:
+            loads["substructure_drag_coefficient"] = float(
+                loads.get("substructure_drag_coefficient", 1.60) or 1.60
+            )
+        except Exception:
+            loads["substructure_drag_coefficient"] = 1.60
+            
+        # ---- Ensure loads.skew is present and valid (5 values each) ----
         skew_in = loads.get("skew", {})
         if not isinstance(skew_in, dict):
             skew_in = {}
@@ -158,7 +176,7 @@ class ConfigManager:
 
         # ---- Ensure version ----
         if "version" not in payload:
-            payload["version"] = 6
+            payload["version"] = 7
 
         # ---- Save atomically with backup ----
         self.save("control_data.json", payload)
@@ -413,7 +431,15 @@ class ConfigManager:
 
         # ---- Loads defaults
         l.setdefault("gust_factor", 1.00)
-        l.setdefault("drag_coefficient", 1.20)
+
+        # v7: new split drag coefficients (we don't care about old files much,
+        # but this keeps them sane if any exist)
+        l.setdefault("superstructure_drag_coefficient", 1.30)
+        l.setdefault("substructure_drag_coefficient", 1.60)
+
+        # optional: drop legacy single key if present
+        l.pop("drag_coefficient", None)
+
 
 
         # ---- NEW in v5: crash_barrier_depth (accept legacy aliases)

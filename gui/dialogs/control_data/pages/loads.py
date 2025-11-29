@@ -27,19 +27,26 @@ class LoadsPage(QWidget, ControlDataPage):
         # Keep fields at their size hint instead of stretching vertically
         form.setFieldGrowthPolicy(QFormLayout.FieldsStayAtSizeHint)
 
-        # --- Scalars (gust/drag) ---
+        # --- Scalars (gust / drag) ---
         self.spin_gust = QDoubleSpinBox()
         self.spin_gust.setRange(0.5, 3.0)
         self.spin_gust.setSingleStep(0.05)
         self.spin_gust.setValue(1.00)
 
-        self.spin_drag = QDoubleSpinBox()
-        self.spin_drag.setRange(0.1, 5.0)
-        self.spin_drag.setSingleStep(0.05)
-        self.spin_drag.setValue(1.20)
+        self.spin_drag_super = QDoubleSpinBox()
+        self.spin_drag_super.setRange(0.1, 5.0)
+        self.spin_drag_super.setSingleStep(0.05)
+        self.spin_drag_super.setValue(1.20)
+
+        self.spin_drag_sub = QDoubleSpinBox()
+        self.spin_drag_sub.setRange(0.1, 5.0)
+        self.spin_drag_sub.setSingleStep(0.05)
+        self.spin_drag_sub.setValue(1.20)
 
         form.addRow("Gust Factor", self.spin_gust)
-        form.addRow("Drag Coefficient", self.spin_drag)
+        form.addRow("Superstructure Drag Coefficient", self.spin_drag_super)
+        form.addRow("Substructure Drag Coefficient", self.spin_drag_sub)
+
 
         # --- Crash Barrier Depth (length with unit label) ---
         self.txt_barrier = QLineEdit("0.0")
@@ -142,7 +149,8 @@ class LoadsPage(QWidget, ControlDataPage):
     def set_state_from_model(self, model: ControlDataModel) -> None:
         l = model.loads
         self.spin_gust.setValue(l.gust_factor)
-        self.spin_drag.setValue(l.drag_coefficient)
+        self.spin_drag_super.setValue(l.superstructure_drag_coefficient)
+        self.spin_drag_sub.setValue(l.substructure_drag_coefficient)
         self.txt_barrier.setText(f"{l.crash_barrier_depth:g}")
 
         # skew
@@ -177,7 +185,8 @@ class LoadsPage(QWidget, ControlDataPage):
 
         model.loads = LoadSettings(
             gust_factor=self.spin_gust.value(),
-            drag_coefficient=self.spin_drag.value(),
+            superstructure_drag_coefficient=self.spin_drag_super.value(),
+            substructure_drag_coefficient=self.spin_drag_sub.value(),
             crash_barrier_depth=float(self.txt_barrier.text() or 0.0),
             skew=SkewCoefficients(transverse=trans_skew, longitudinal=longi_skew),
             wind_live=WindLiveLoadCoefficients(
@@ -185,6 +194,7 @@ class LoadsPage(QWidget, ControlDataPage):
                 longitudinal=longi_live,
             ),
         )
+
 
 
 
