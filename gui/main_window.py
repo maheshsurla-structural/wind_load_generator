@@ -189,9 +189,11 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
             raise
 
-        # Coefficients
-        gust = f"{loads.gust_factor:g}"
-        cd   = f"{loads.drag_coefficient:g}"
+        # Coefficients from Control Data
+        gust      = f"{loads.gust_factor:g}"
+        cd_super  = f"{loads.superstructure_drag_coefficient:g}"
+        cd_sub    = f"{loads.substructure_drag_coefficient:g}"
+
 
         # --- Compute real Structure Height (deck Z - ground), unit-safe ---
         deck_ref   = result.get("deck_reference_height")
@@ -223,9 +225,10 @@ class MainWindow(QMainWindow):
                     **defaults,
                     "Structure Height": height_str,
                     "Gust Factor": gust,
-                    "Drag Coefficient": cd,
+                    "Drag Coefficient": cd_super,   # superstructure Cd
                     "Member Type": "Deck",
                 })
+
 
 
         # Pier clusters
@@ -252,9 +255,11 @@ class MainWindow(QMainWindow):
                 **defaults,
                 "Structure Height": height_str,
                 "Gust Factor": gust,
-                "Drag Coefficient": cd,
+                # Every non-deck group uses the substructure Cd
+                "Drag Coefficient": cd_sub,
                 "Member Type": member_type,
             })
+
 
 
         # ---- single PUT to MIDAS

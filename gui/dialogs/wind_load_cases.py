@@ -341,7 +341,7 @@ class WindLoadCases(QDialog):
         root.addLayout(btn_row)
 
     def _build_angles_group(self) -> QGroupBox:
-        gb = QGroupBox("Angle Configuration")
+        gb = QGroupBox("Angle and Quadrant Configuration")
         lay = QHBoxLayout(gb)
 
         lay.addWidget(QLabel("Number of Angles:"))
@@ -387,7 +387,7 @@ class WindLoadCases(QDialog):
 
         # checkbox row
         cbrow = QHBoxLayout()
-        cbrow.addWidget(QLabel("Show:"))
+        cbrow.addWidget(QLabel("Limit States:"))
         self._ws_checkboxes: List[QCheckBox] = []
         for case in self.ws_all_cases:
             cb = QCheckBox(case)

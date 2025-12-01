@@ -133,3 +133,15 @@ if __name__ == "__main__":
 
 #     print("\nAll done from main.py ✅")
 
+# from core.geometry.midas_element_local_axes import MidasElementLocalAxes
+
+# # Build snapshot once (you can pass a custom logger if you like)
+# model = MidasElementLocalAxes.from_midas(debug=True)
+
+# axes_1 = model.compute_local_axes_for_element(1)
+# axes_2 = model.compute_local_axes_for_element(2)
+# axes_3 = model.compute_local_axes_for_element(3)
+# axes_4 = model.compute_local_axes_for_element(4)
+# axes_5 = model.compute_local_axes_for_element(5)
+# axes_6 = model.compute_local_axes_for_element(6)
+# later you can do plates / solids using the same `model`
