@@ -1,4 +1,4 @@
-# core\analytical_model_classification\classify_elements.py
+# core/analytical_model_classification/classify_elements.py
 
 from midas import elements, nodes, units, ViewSelected
 
@@ -50,6 +50,7 @@ def classify_elements(
             "deck_elements": deck_elements,
             "substructure_elements": substructure_elements,
             "pier_clusters": {},
+            "pier_frames": [],                      # NEW: empty list
             "deck_reference_height": reference_height,
             "model_unit": units.get("DIST") or "FT",
         }
@@ -63,7 +64,8 @@ def classify_elements(
         base_name=pier_base_name,
     )
 
-    pier_clusters = process_pier_clusters(
+    # NEW: returns (pier_clusters, pier_frames)
+    pier_clusters, pier_frames = process_pier_clusters(
         pier_clusters_raw,
         substructure_elements,
         reference_height,
@@ -76,6 +78,7 @@ def classify_elements(
         "deck_elements": deck_elements,
         "substructure_elements": substructure_elements,
         "pier_clusters": pier_clusters,
+        "pier_frames": pier_frames,                # NEW
         "deck_reference_height": reference_height,
         "model_unit": units.get("DIST") or "FT",
     }

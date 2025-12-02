@@ -2,7 +2,7 @@
 
 import math
 import pandas as pd
-
+from typing import Optional, List
 
 LOAD_CASES = ["Strength III", "Strength V", "Service I", "Service IV"]
 
@@ -12,6 +12,10 @@ class WindDatabase:
     def __init__(self):
         # Structural groups and their parameters (wind speed, exposure, etc.)
         self.structural_groups = {}
+
+        # Pier frame configuration (filled from classification / UI)
+        # list[PierFrameDef] or list[dict]
+        self.pier_frames: List[object] = []              # <-- NEW
 
         # Tabular storage for calculations and cases
         self.wind_pressures = pd.DataFrame(columns=[
@@ -126,6 +130,44 @@ class WindDatabase:
             "WL Cases": self.wl_cases
         }
 
+    # ---------------------------
+    # Pier frame lookup
+    # ---------------------------
+    def get_pier_reference_for_group(self, group_name: str) -> Optional[str]:
+        """
+        Given a structural group name (pier, pier cap, or above-deck),
+        return the pier group whose local axes should be used as reference.
+
+        Uses self.pier_frames, which is a list of PierFrameDef (or dicts
+        with pier_group / cap_group / above_group).
+        """
+        frames = self.pier_frames or []
+
+        for pf in frames:
+            # Allow both dataclass and plain dict
+            if hasattr(pf, "pier_group"):
+                pier_group  = pf.pier_group
+                cap_group   = pf.cap_group
+                above_group = pf.above_group
+            elif isinstance(pf, dict):
+                pier_group  = pf.get("pier_group")
+                cap_group   = pf.get("cap_group")
+                above_group = pf.get("above_group")
+            else:
+                continue
+
+            if not pier_group:
+                continue
+
+            if group_name == pier_group:
+                return pier_group
+            if cap_group and group_name == cap_group:
+                return pier_group
+            if above_group and group_name == above_group:
+                return pier_group
+
+        # No mapping found
+        return None
 
 
 wind_db = WindDatabase()

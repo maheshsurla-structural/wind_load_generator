@@ -23,6 +23,7 @@ def process_pier_clusters(
         nodes_in_model = nodes.get_all()
 
     pier_clusters = {}
+    pier_frames = []   # NEW: list of {pier_group, cap_group, above_group}
 
     for label, elements_list in pier_clusters_raw.items():
         # restrict substructure_elements to just this cluster's elements
@@ -42,8 +43,27 @@ def process_pier_clusters(
             nodes_in_model=nodes_in_model,
         )
 
-        pier_clusters[f"{label}{suffix_above}"] = sub_above
-        pier_clusters[f"{label}_PierCap"] = pier_caps
-        pier_clusters[f"{label}_Pier"] = piers
+        # Concrete group names for this cluster
+        above_label = f"{label}{suffix_above}"
+        cap_label   = f"{label}_PierCap"
+        pier_label  = f"{label}_Pier"
 
-    return pier_clusters
+        # Only register non-empty groups
+        if sub_above:
+            pier_clusters[above_label] = sub_above
+        if pier_caps:
+            pier_clusters[cap_label] = pier_caps
+        if piers:
+            pier_clusters[pier_label] = piers
+
+        # Build one frame for this cluster if we have a pier (axes come from pier)
+        if piers:
+            frame = {
+                "pier_group": pier_label,
+                "cap_group": cap_label if pier_caps else None,
+                "above_group": above_label if sub_above else None,
+            }
+            pier_frames.append(frame)
+
+    # IMPORTANT: now we return *both*
+    return pier_clusters, pier_frames

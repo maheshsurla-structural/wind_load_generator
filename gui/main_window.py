@@ -1,5 +1,6 @@
 # gui/main_window.py
 from __future__ import annotations
+from typing import List, Optional
 
 from PySide6.QtWidgets import (
     QMainWindow, QToolBar, QStatusBar, QWidget, QVBoxLayout,
@@ -21,6 +22,8 @@ from gui.widgets.pressure_table import PressureTable
 
 from gui.dialogs.control_data.models import ControlDataModel
 from gui.dialogs.control_data import ControlData
+from gui.dialogs.pier_frame_config import PierFrameConfigDialog, PierFrameDef
+
 
 from gui.dialogs.wind_load_input import WindLoadInput
 from gui.dialogs.wind_load_cases import WindLoadCases
@@ -74,12 +77,16 @@ class MainWindow(QMainWindow):
         main_layout .addWidget(self.wind_parameters)
 
         # Structural actions
-        actions_group = QGroupBox("Structural Group Classification & Wind Data")
+        actions_group = QGroupBox("Structural Group Classification And Wind Data")
         actions = QHBoxLayout(actions_group)
+
         self.btn_generate = QPushButton("Generate Wind Data")
         self.btn_edit     = QPushButton("Edit Wind Data")
+        self.btn_pier_frames = QPushButton("Pier Frames...")
+
         actions.addWidget(self.btn_generate)
         actions.addWidget(self.btn_edit)
+        actions.addWidget(self.btn_pier_frames)               
         main_layout .addWidget(actions_group)
 
         # Pressure table (imported from widgets/pressure_table.py)
@@ -108,6 +115,7 @@ class MainWindow(QMainWindow):
         # ---- Connections ----
         act_control.triggered.connect(self.open_control_data)
         self.btn_edit.clicked.connect(self.open_wind_load_input)
+        self.btn_pier_frames.clicked.connect(self.open_pier_frames)
         self.btn_pair.clicked.connect(self.open_pair_wind_load_cases)
         self.btn_generate.clicked.connect(self._on_generate_clicked)
         self.btn_assign_wind_loads.clicked.connect(self._on_assign_wind_loads_clicked)
@@ -177,8 +185,19 @@ class MainWindow(QMainWindow):
         run_in_thread(worker)
 
 
-    def _run_classification_task(self, run_classification, defaults, naming, loads, ui_length_unit, suffix_above):
-        """Runs off the UI thread. Classifies, batches groups, one PUT to MIDAS, updates local DB."""
+    def _run_classification_task(
+        self,
+        run_classification,
+        defaults,
+        naming,
+        loads,
+        ui_length_unit,
+        suffix_above,
+    ):
+        """
+        Runs off the UI thread. Classifies, batches groups, one PUT to MIDAS,
+        updates local DB and auto-builds pier frame configuration.
+        """
 
         print("DEBUG: entering _run_classification_task")
         try:
@@ -190,10 +209,9 @@ class MainWindow(QMainWindow):
             raise
 
         # Coefficients from Control Data
-        gust      = f"{loads.gust_factor:g}"
-        cd_super  = f"{loads.superstructure_drag_coefficient:g}"
-        cd_sub    = f"{loads.substructure_drag_coefficient:g}"
-
+        gust     = f"{loads.gust_factor:g}"
+        cd_super = f"{loads.superstructure_drag_coefficient:g}"
+        cd_sub   = f"{loads.substructure_drag_coefficient:g}"
 
         # --- Compute real Structure Height (deck Z - ground), unit-safe ---
         deck_ref   = result.get("deck_reference_height")
@@ -202,7 +220,11 @@ class MainWindow(QMainWindow):
 
         if deck_ref is not None:
             try:
-                ground_in_model = convert_length(ground_ui, from_sym=ui_length_unit, to_sym=model_unit)
+                ground_in_model = convert_length(
+                    ground_ui,
+                    from_sym=ui_length_unit,
+                    to_sym=model_unit,
+                )
             except ValueError:
                 ground_in_model = ground_ui
             height = max(0.0, float(deck_ref) - ground_in_model)
@@ -213,36 +235,43 @@ class MainWindow(QMainWindow):
         # ---- collect groups for ONE PUT
         batch: list[tuple[str, list[int]]] = []
 
-        # Deck group (optional)
-        deck_elements = result.get("deck_elements", {})
+        # ================================================================
+        # 1) Deck group (optional)
+        # ================================================================
+        deck_elements = result.get("deck_elements", {}) or {}
         if deck_elements:
             deck_ids = sorted({int(i) for i in deck_elements.keys()})
             if deck_ids:
                 deck_group_name = f"{(naming.deck_name or 'Deck').strip()} Elements"
                 batch.append((deck_group_name, deck_ids))
+
                 # update local DB (app-side)
-                wind_db.add_structural_group(deck_group_name, {
-                    **defaults,
-                    "Structure Height": height_str,
-                    "Gust Factor": gust,
-                    "Drag Coefficient": cd_super,   # superstructure Cd
-                    "Member Type": "Deck",
-                })
+                wind_db.add_structural_group(
+                    deck_group_name,
+                    {
+                        **defaults,
+                        "Structure Height": height_str,
+                        "Gust Factor": gust,
+                        "Drag Coefficient": cd_super,   # superstructure Cd
+                        "Member Type": "Deck",
+                    },
+                )
 
+        # ================================================================
+        # 2) Pier-related clusters (Pier / PierCap / Above-Deck)
+        #    NOTE: classification into those buckets was already done
+        #          geometrically in process_pier_clusters.
+        # ================================================================
+        pier_clusters = result.get("pier_clusters", {}) or {}
 
-
-        # Pier clusters
-        for label, element_dict in result.get("pier_clusters", {}).items():
+        for label, element_dict in pier_clusters.items():
             ids = sorted({int(i) for i in element_dict.keys()})
             if not ids:
                 continue
 
             batch.append((label, ids))
 
-            # Decide member type based on label:
-            # 1) *_PierCap  -> "Pier Cap"
-            # 2) *<suffix_above> -> "Substructure – Above Deck"
-            # 3) everything else -> "Pier"
+            # Member Type only affects how we treat the group later.
             if label.endswith("_PierCap"):
                 member_type = "Pier Cap"
             elif suffix_above and label.endswith(suffix_above):
@@ -250,29 +279,67 @@ class MainWindow(QMainWindow):
             else:
                 member_type = "Pier"
 
-            # update local DB (app-side)
-            wind_db.add_structural_group(label, {
-                **defaults,
-                "Structure Height": height_str,
-                "Gust Factor": gust,
-                # Every non-deck group uses the substructure Cd
-                "Drag Coefficient": cd_sub,
-                "Member Type": member_type,
-            })
+            wind_db.add_structural_group(
+                label,
+                {
+                    **defaults,
+                    "Structure Height": height_str,
+                    "Gust Factor": gust,
+                    # Every non-deck group uses the substructure Cd
+                    "Drag Coefficient": cd_sub,
+                    "Member Type": member_type,
+                },
+            )
 
-
-
-        # ---- single PUT to MIDAS
+        # ================================================================
+        # 3) Single PUT to MIDAS for all structural groups
+        # ================================================================
         if batch:
             try:
                 print(f"Assigning {len(batch)} structural groups in one PUT...")
                 StructuralGroup.bulk_upsert(batch)
             except Exception as exc:
-                raise RuntimeError(f"Failed to create/update structural groups in batch: {exc}")
+                raise RuntimeError(
+                    f"Failed to create/update structural groups in batch: {exc}"
+                )
 
-        # Finish: compute pressures and notify UI
+        # ================================================================
+        # 4) Build PierFrameDef list from structured pier_frames
+        #    result['pier_frames'] is expected to be a list of dicts:
+        #      { 'pier_group': str, 'cap_group': str|None, 'above_group': str|None }
+        # ================================================================
+        raw_frames = result.get("pier_frames") or []
+
+        auto_frames: List[PierFrameDef] = []
+        for frame in raw_frames:
+            pier_group = frame.get("pier_group")
+            if not pier_group:
+                # We need a pier group to define axes; skip otherwise
+                continue
+
+            auto_frames.append(
+                PierFrameDef(
+                    pier_group=pier_group,
+                    cap_group=frame.get("cap_group") or None,
+                    above_group=frame.get("above_group") or None,
+                )
+            )
+
+        # Merge with any existing manual frames (auto overrides same pier)
+        existing_frames = list(getattr(wind_db, "pier_frames", []) or [])
+        by_pier = {pf.pier_group: pf for pf in existing_frames}
+        for pf in auto_frames:
+            by_pier[pf.pier_group] = pf
+
+        wind_db.pier_frames = list(by_pier.values())
+
+        # ================================================================
+        # 5) Finish: compute pressures and notify UI
+        # ================================================================
         wind_db.update_wind_pressures()
         self.bus.windGroupsUpdated.emit(wind_db.get_data())
+
+
 
 
 
@@ -307,6 +374,10 @@ class MainWindow(QMainWindow):
         dlg = WindLoadCases(self, naming=naming)
         dlg.exec()
 
+    def open_pier_frames(self) -> None:
+        """Open the Pier Frame configuration dialog."""
+        dlg = PierFrameConfigDialog(self)   # no control_model passed
+        dlg.exec()
 
 
     def _on_control_data_changed(self, model: ControlDataModel) -> None:
