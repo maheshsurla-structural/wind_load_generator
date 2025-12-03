@@ -156,7 +156,11 @@ def build_live_wind_beam_load_plan_for_group(
     components_df: pd.DataFrame,
     *,
     eccentricity: float = 6.0,
+    element_ids: list[int] | None = None,
+    elements_in_model=None,   # accepted for API symmetry, not used here
+    nodes_in_model=None,      # accepted for API symmetry, not used here
 ) -> pd.DataFrame:
+
     """
     Take the WL components (transverse/longitudinal line loads) and build
     a combined beam-load plan DataFrame for MIDAS, but DO NOT send it.
@@ -164,17 +168,21 @@ def build_live_wind_beam_load_plan_for_group(
     This mirrors the old apply_live_wind_loads_to_group implementation.
     """
 
-    # Resolve group → element_ids once
-    element_ids = StructuralGroup.get_elements_by_name(group_name)
+    if components_df is None or components_df.empty:
+        print(f"[build_live_wind_beam_load_plan_for_group] No components for {group_name}")
+        return pd.DataFrame()
+
+    # Resolve group → element_ids
+    if element_ids is None:
+        element_ids = StructuralGroup.get_elements_by_name(group_name)
     element_ids = [int(e) for e in element_ids]
+
 
     if not element_ids:
         print(f"[build_live_wind_beam_load_plan_for_group] Group {group_name} has no elements")
         return pd.DataFrame()
 
-    if components_df is None or components_df.empty:
-        print(f"[build_live_wind_beam_load_plan_for_group] No components for {group_name}")
-        return pd.DataFrame()
+
 
     plans: list[pd.DataFrame] = []
 
@@ -242,7 +250,7 @@ def apply_live_wind_loads_to_group(group_name: str, components_df: pd.DataFrame)
     summarize_plan(
         combined_plan,
         label=f"WL_{group_name}",
-        dump_csv_per_case=True,   # set True if you want per-case CSVs
+        dump_csv_per_case=False,   # set True if you want per-case CSVs
         write_log=True,
     )
     # ================================================================

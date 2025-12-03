@@ -9,20 +9,25 @@ LOAD_CASES = ["Strength III", "Strength V", "Service I", "Service IV"]
 
 class WindDatabase:
 
+
     def __init__(self):
         # Structural groups and their parameters (wind speed, exposure, etc.)
         self.structural_groups = {}
 
         # Pier frame configuration (filled from classification / UI)
-        # list[PierFrameDef] or list[dict]
-        self.pier_frames: List[object] = []              # <-- NEW
+        self.pier_frames: List[object] = []
+
+        # NEW: map structural group name -> list of element IDs
+        self.group_members: dict[str, list[int]] = {}
 
         # Tabular storage for calculations and cases
         self.wind_pressures = pd.DataFrame(columns=[
             "Group", "Load Case", "Gust Wind Speed", "Kz", "G", "Cd", "Pz (ksf)"
         ])
-        self.ws_cases = pd.DataFrame(columns=["Group", "Case", "Details"])
-        self.wl_cases = pd.DataFrame(columns=["Group", "Case", "Details"])
+
+        # WS & WL case tables (no groups)
+        self.ws_cases = pd.DataFrame(columns=["Case", "Details"])
+        self.wl_cases = pd.DataFrame(columns=["Case", "Details"])
 
     # ---------------------------
     # Structural Groups

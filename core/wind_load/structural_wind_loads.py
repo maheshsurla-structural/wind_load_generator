@@ -159,7 +159,13 @@ def build_structural_wind_beam_load_plan_for_group(
     # extra Y exposure options (same as for deck live wind eccentricity)
     extra_exposure_y_default: float = 0.0,
     extra_exposure_y_by_id: Dict[int, float] | None = None,
+
+    # NEW: optional pre-resolved element IDs + geometry cache
+    element_ids: list[int] | None = None,
+    elements_in_model=None,   # currently unused here, but accepted
+    nodes_in_model=None,      # for API compatibility with caller
 ) -> pd.DataFrame:
+
     """
     Same logic as apply_structural_wind_loads_to_group, but returns the
     combined beam-load plan DataFrame instead of sending it to MIDAS.
@@ -170,8 +176,10 @@ def build_structural_wind_beam_load_plan_for_group(
         return pd.DataFrame()
 
     # ---- 1) Resolve elements & exposures ONCE ------------------------
-    element_ids = StructuralGroup.get_elements_by_name(group_name)
+    if element_ids is None:
+        element_ids = StructuralGroup.get_elements_by_name(group_name)
     element_ids = [int(e) for e in element_ids]
+
 
     if not element_ids:
         print(f"[build_structural_wind_beam_load_plan_for_group] Group {group_name} has no elements")

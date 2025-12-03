@@ -23,6 +23,105 @@ from core.wind_load.live_wind_loads import (
 
 from wind_database import wind_db
 
+import numpy as np
+from functools import lru_cache
+
+from core.geometry.midas_element_local_axes import MidasElementLocalAxes
+from core.geometry.element_local_axes import LocalAxes
+
+# ---------------------------------------------------------------------------
+# Pier-frame orientation helpers
+# ---------------------------------------------------------------------------
+
+_axes_helper: MidasElementLocalAxes | None = None
+
+def _get_axes_helper() -> MidasElementLocalAxes:
+    """
+    Lazy singleton for MidasElementLocalAxes so we don't keep hitting MIDAS.
+    """
+    global _axes_helper
+    if _axes_helper is None:
+        _axes_helper = MidasElementLocalAxes.from_midas()
+    return _axes_helper
+
+
+@lru_cache(maxsize=128)
+def _get_group_local_axes(group_name: str) -> LocalAxes:
+    """
+    Return a representative LocalAxes for the given structural group.
+
+    We just pick the first element in the group as the direction reference.
+    """
+    helper = _get_axes_helper()
+    element_ids = StructuralGroup.get_elements_by_name(group_name)
+    if not element_ids:
+        raise RuntimeError(f"Group {group_name!r} has no elements in MIDAS.")
+
+    elem_id = int(element_ids[0])
+    return helper.compute_local_axes_for_element(elem_id)
+
+
+def _signed_angle_about_axis(
+    v_from: np.ndarray,
+    v_to: np.ndarray,
+    axis: np.ndarray,
+    *,
+    tol: float = 1e-9,
+) -> float:
+    """
+    Signed angle (deg) from v_from -> v_to about 'axis' using the right-hand rule.
+
+    Both v_from and v_to are projected onto the plane perpendicular to 'axis'
+    before computing the angle.
+    """
+    axis = np.asarray(axis, dtype=float)
+    v_from = np.asarray(v_from, dtype=float)
+    v_to = np.asarray(v_to, dtype=float)
+
+    norm_axis = np.linalg.norm(axis)
+    if norm_axis < tol:
+        return 0.0
+    axis = axis / norm_axis
+
+    def _proj(v: np.ndarray) -> np.ndarray:
+        v = v - np.dot(v, axis) * axis
+        n = np.linalg.norm(v)
+        if n < tol:
+            return np.zeros(3)
+        return v / n
+
+    a = _proj(v_from)
+    b = _proj(v_to)
+    if not a.any() or not b.any():
+        return 0.0
+
+    cosang = float(np.clip(np.dot(a, b), -1.0, 1.0))
+    sinang = float(np.dot(axis, np.cross(a, b)))
+    return math.degrees(math.atan2(sinang, cosang))
+
+
+@lru_cache(maxsize=256)
+def _get_angle_offset_from_pier(group_name: str) -> float:
+    pier_group = wind_db.get_pier_reference_for_group(group_name)
+    if not pier_group or pier_group == group_name:
+        return 0.0
+
+    try:
+        pier_axes = _get_group_local_axes(pier_group)
+        grp_axes  = _get_group_local_axes(group_name)
+    except RuntimeError:
+        # No elements in one of the groups – no reliable orientation
+        return 0.0
+
+    delta = _signed_angle_about_axis(
+        pier_axes.ey,
+        grp_axes.ey,
+        pier_axes.ex,
+    )
+    return delta
+
+
+
 
 # ---------------------------------------------------------------------------
 # 1) Build components table (pressure in local Y/Z for substructure)
@@ -94,12 +193,14 @@ def build_substructure_wind_components_table(
                 "load_case",
                 "load_group",
                 "angle",
+                "design_angle",  
                 "base_case",
                 "P",
                 "p_local_y",
                 "p_local_z",
             ]
         )
+
 
     needed_ws = {"Case", "Angle", "Value"}
     if missing := needed_ws - set(ws_cases_df.columns):
@@ -118,27 +219,34 @@ def build_substructure_wind_components_table(
             continue
 
         try:
-            ang_deg = float(ws_row["Angle"])
+            ang_design = float(ws_row["Angle"])
         except (TypeError, ValueError):
             continue
 
-        # Pressure magnitude for this group + base case
+        # --- NEW: adjust angle by pier-frame offset --------------------
+        # θ_design is defined relative to the pier Y.
+        # For this group's local (Y,Z), use:
+        #   θ_eff = θ_design - δ
+        # where δ is angle from pier Y -> group Y.
+        delta = _get_angle_offset_from_pier(group_name)
+        ang_eff = ang_design - delta   # <--- key line
+        theta = math.radians(ang_eff)
+
+        # Pressure magnitude for this (group, base_case)
         mask = (
             (wind_pressures_df["Group"] == group_name)
             & (wind_pressures_df["Load Case"] == base_case)
         )
         sub = wind_pressures_df[mask]
         if sub.empty:
-            # No pressure defined for this (group, base_case)
             continue
 
-        P = float(sub.iloc[0]["Pz (ksf)"])  # treat as magnitude
+        P = float(sub.iloc[0]["Pz (ksf)"])
 
-        # --- Base components from angle (Q1-equivalent) -----------------
-        # 0° is local +Y; positive angle rotates toward local +Z.
-        theta = math.radians(ang_deg)
+        # 0° in this group's LOCAL frame is its own +Y.
         base_y = P * math.cos(theta)
         base_z = P * math.sin(theta)
+
 
         # --- Quadrant sign handling (reuse live_wind helpers) -----------
         # Interpret T ≡ local Y, L ≡ local Z for the sign logic.
@@ -149,7 +257,8 @@ def build_substructure_wind_components_table(
             {
                 "load_case": lcname,
                 "load_group": lcname,
-                "angle": ang_deg,
+                "angle": ang_eff,
+                "design_angle": ang_design,
                 "base_case": base_case,
                 "P": P,
                 "p_local_y": y_signed,
@@ -174,7 +283,13 @@ def build_substructure_wind_beam_load_plan_for_group(
     *,
     extra_exposure_y_default: float = 0.0,
     extra_exposure_y_by_id: Dict[int, float] | None = None,
+
+    # NEW: optional pre-resolved element IDs + geometry cache
+    element_ids: list[int] | None = None,
+    elements_in_model=None,   # not used here, but accepted
+    nodes_in_model=None,      # for API compatibility with caller
 ) -> pd.DataFrame:
+
     """
     Build a combined beam-load plan (LY + LZ) for substructure wind on a
     structural group.
@@ -220,8 +335,10 @@ def build_substructure_wind_beam_load_plan_for_group(
         return pd.DataFrame()
 
     # ---- Resolve elements in the group --------------------------------
-    element_ids = StructuralGroup.get_elements_by_name(group_name)
+    if element_ids is None:
+        element_ids = StructuralGroup.get_elements_by_name(group_name)
     element_ids = [int(e) for e in element_ids]
+
 
     if not element_ids:
         print(
