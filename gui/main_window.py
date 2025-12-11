@@ -1225,8 +1225,10 @@ class MainWindow(QMainWindow):
                     combined_plan,
                     label="ALL_WIND",
                     dump_csv_per_case=False,
-                    write_log=True,
+                    write_log=True,          # keep log file if you like
+                    print_summary=False,     # ← NO console spam
                 )
+
 
                 apply_beam_load_plan_to_midas(combined_plan)
 

@@ -1,4 +1,5 @@
 # core/wind_load/debug_utils.py
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -63,28 +64,33 @@ def summarize_plan(
     dump_csv_per_case: bool = False,
     write_log: bool = True,
     max_cases_print: int = 30,
+    print_summary: bool = False,   # default: no console printing
 ) -> None:
     """
     Pretty-print a summary of a beam-load plan, optionally:
       - writing per-load-case CSVs
       - logging a compact summary to wind_debug.txt
+
+    `print_summary` controls console output.
     """
 
     if plan_df is None or plan_df.empty:
-        print(color(f"[DEBUG:{label}] plan_df is empty", "yellow"))
+        if print_summary:
+            print(color(f"[DEBUG:{label}] plan_df is empty", "yellow"))
         return
 
     total_rows = len(plan_df)
     unique_cases = plan_df["load_case"].unique()
     n_cases = len(unique_cases)
 
-    print(
-        color(
-            f"\n[DEBUG:{label}] Beam-load plan summary "
-            f"(rows={total_rows}, load_cases={n_cases})",
-            "cyan",
+    if print_summary:
+        print(
+            color(
+                f"\n[DEBUG:{label}] Beam-load plan summary "
+                f"(rows={total_rows}, load_cases={n_cases})",
+                "cyan",
+            )
         )
-    )
 
     # Per-load-case counts
     case_counts = (
@@ -99,20 +105,20 @@ def summarize_plan(
         .sort_index()
     )
 
-    print(color("  Element count per load_case:", "bold"))
-    if len(case_counts) <= max_cases_print:
-        print(case_counts)
-    else:
-        # Print first few only
-        print(case_counts.head(max_cases_print))
-        print(color(f"  ... ({len(case_counts) - max_cases_print} more)", "yellow"))
+    if print_summary:
+        print(color("  Element count per load_case:", "bold"))
+        if len(case_counts) <= max_cases_print:
+            print(case_counts)
+        else:
+            print(case_counts.head(max_cases_print))
+            print(color(f"  ... ({len(case_counts) - max_cases_print} more)", "yellow"))
 
-    print(color("\n  Element count per (load_case, direction):", "bold"))
-    if len(case_dir_counts) <= max_cases_print:
-        print(case_dir_counts)
-    else:
-        print(case_dir_counts.head(max_cases_print))
-        print(color(f"  ... ({len(case_dir_counts) - max_cases_print} more)", "yellow"))
+        print(color("\n  Element count per (load_case, direction):", "bold"))
+        if len(case_dir_counts) <= max_cases_print:
+            print(case_dir_counts)
+        else:
+            print(case_dir_counts.head(max_cases_print))
+            print(color(f"  ... ({len(case_dir_counts) - max_cases_print} more)", "yellow"))
 
     # Optional: per-load-case CSVs
     if dump_csv_per_case:
@@ -122,12 +128,13 @@ def summarize_plan(
             out_path = DEBUG_DIR / f"{ts}_{label}_{safe_lc}.csv"
             sub = plan_df[plan_df["load_case"] == lc]
             sub.to_csv(out_path, index=False)
-        print(
-            color(
-                f"\n  [DEBUG:{label}] wrote per-load-case CSVs to {DEBUG_DIR}",
-                "green",
+        if print_summary:
+            print(
+                color(
+                    f"\n  [DEBUG:{label}] wrote per-load-case CSVs to {DEBUG_DIR}",
+                    "green",
+                )
             )
-        )
 
     # Optional: compact log line
     if write_log:
@@ -139,7 +146,8 @@ def summarize_plan(
             for lc, cnt in case_counts.items():
                 f.write(f"    {lc}: {cnt} elements\n")
 
-    print()  # blank line
+    if print_summary:
+        print()  # blank line
     return
 
 
@@ -247,3 +255,4 @@ def compare_plan_element_patterns(
 
     print()
     return result
+
