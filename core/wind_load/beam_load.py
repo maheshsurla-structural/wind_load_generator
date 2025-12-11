@@ -347,5 +347,3 @@ def apply_beam_load_plan_to_midas(
     )
 
     return plan_df
-
-

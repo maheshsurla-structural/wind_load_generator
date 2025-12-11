@@ -1,3 +1,4 @@
+
 # core/wind_load/structural_wind_loads.py
 from __future__ import annotations
 
@@ -299,4 +300,3 @@ def apply_structural_wind_loads_to_group(
     # ================================================================
 
     apply_beam_load_plan_to_midas(combined_plan)
-
