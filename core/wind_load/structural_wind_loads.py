@@ -9,9 +9,9 @@ from core.wind_load.beam_load import (
     apply_beam_load_plan_to_midas,
     build_uniform_pressure_beam_load_plan_from_depths,
     _get_element_to_section_map,
+    get_section_properties_cached,
 )
-from midas.resources.structural_group import StructuralGroup
-from midas import get_section_properties
+from core.wind_load.group_cache import get_group_element_ids
 from core.wind_load.compute_section_exposures import compute_section_exposures
 
 from core.wind_load.live_wind_loads import (
@@ -178,8 +178,10 @@ def build_structural_wind_beam_load_plan_for_group(
 
     # ---- 1) Resolve elements & exposures ONCE ------------------------
     if element_ids is None:
-        element_ids = StructuralGroup.get_elements_by_name(group_name)
-    element_ids = [int(e) for e in element_ids]
+        element_ids = get_group_element_ids(group_name)
+    else:
+        element_ids = [int(e) for e in element_ids]
+
 
 
     if not element_ids:
@@ -191,7 +193,7 @@ def build_structural_wind_beam_load_plan_for_group(
         print(f"[build_structural_wind_beam_load_plan_for_group] No section mapping for group {group_name}")
         return pd.DataFrame()
 
-    section_props_raw = get_section_properties()
+    section_props_raw = get_section_properties_cached()
     exposures_df = compute_section_exposures(
         section_props_raw,
         extra_exposure_y_default=extra_exposure_y_default,

@@ -6,14 +6,13 @@ import math
 
 import pandas as pd
 
-from midas.resources.structural_group import StructuralGroup
-from midas import get_section_properties
-
+from core.wind_load.group_cache import get_group_element_ids
 from core.wind_load.compute_section_exposures import compute_section_exposures
 from core.wind_load.beam_load import (
     build_uniform_pressure_beam_load_plan_from_depths,
     _get_element_to_section_map,
     apply_beam_load_plan_to_midas,
+    get_section_properties_cached,
 )
 from core.wind_load.debug_utils import summarize_plan
 from core.wind_load.live_wind_loads import (
@@ -51,14 +50,16 @@ def _get_group_local_axes(group_name: str) -> LocalAxes:
     Return a representative LocalAxes for the given structural group.
 
     We just pick the first element in the group as the direction reference.
+    Uses cached group → element IDs.
     """
     helper = _get_axes_helper()
-    element_ids = StructuralGroup.get_elements_by_name(group_name)
+    element_ids = get_group_element_ids(group_name)
     if not element_ids:
         raise RuntimeError(f"Group {group_name!r} has no elements in MIDAS.")
 
-    elem_id = int(element_ids[0])
+    elem_id = element_ids[0]  # already int
     return helper.compute_local_axes_for_element(elem_id)
+
 
 
 def _signed_angle_about_axis(
@@ -211,7 +212,7 @@ def build_substructure_wind_components_table(
         raise ValueError(f"wind_pressures_df missing columns: {missing}")
 
     rows: list[dict] = []
-
+    delta = _get_angle_offset_from_pier(group_name)
     for _, ws_row in ws_cases_df.iterrows():
         base_case = str(ws_row["Case"] or "").strip()
         lcname = str(ws_row["Value"] or "").strip()
@@ -228,8 +229,7 @@ def build_substructure_wind_components_table(
         # For this group's local (Y,Z), use:
         #   θ_eff = θ_design - δ
         # where δ is angle from pier Y -> group Y.
-        delta = _get_angle_offset_from_pier(group_name)
-        ang_eff = ang_design - delta   # <--- key line
+        ang_eff = ang_design - delta
         theta = math.radians(ang_eff)
 
         # Pressure magnitude for this (group, base_case)
@@ -336,8 +336,10 @@ def build_substructure_wind_beam_load_plan_for_group(
 
     # ---- Resolve elements in the group --------------------------------
     if element_ids is None:
-        element_ids = StructuralGroup.get_elements_by_name(group_name)
-    element_ids = [int(e) for e in element_ids]
+        element_ids = get_group_element_ids(group_name)
+    else:
+        element_ids = [int(e) for e in element_ids]
+
 
 
     if not element_ids:
@@ -357,13 +359,14 @@ def build_substructure_wind_beam_load_plan_for_group(
         return pd.DataFrame()
 
     # ---- Compute exposures (Y and Z) from section properties ----------
-    section_props_raw = get_section_properties()
+    section_props_raw = get_section_properties_cached()
     exposures_df = compute_section_exposures(
         section_props_raw,
         extra_exposure_y_default=extra_exposure_y_default,
         extra_exposure_y_by_id=extra_exposure_y_by_id,
         as_dataframe=True,
     )
+
 
     try:
         exposures_df.index = exposures_df.index.astype(int)

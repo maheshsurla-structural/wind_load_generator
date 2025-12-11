@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from typing import Sequence, List, Tuple
 import pandas as pd
-import math
 import re  # ← NEW
 
 from core.wind_load.beam_load import (
@@ -11,9 +10,7 @@ from core.wind_load.beam_load import (
     apply_beam_load_plan_to_midas,
 )
 from core.wind_load.debug_utils import summarize_plan
-
-from midas.resources.structural_group import StructuralGroup
-from midas.resources.element_beam_load import BeamLoadItem, BeamLoadResource
+from core.wind_load.group_cache import get_group_element_ids
 
 
 # ---------------------------------------------------------------------------
@@ -172,10 +169,12 @@ def build_live_wind_beam_load_plan_for_group(
         print(f"[build_live_wind_beam_load_plan_for_group] No components for {group_name}")
         return pd.DataFrame()
 
-    # Resolve group → element_ids
+    # Resolve group → element_ids (cached)
     if element_ids is None:
-        element_ids = StructuralGroup.get_elements_by_name(group_name)
-    element_ids = [int(e) for e in element_ids]
+        element_ids = get_group_element_ids(group_name)
+    else:
+        element_ids = [int(e) for e in element_ids]
+
 
 
     if not element_ids:

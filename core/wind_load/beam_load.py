@@ -4,10 +4,29 @@ from __future__ import annotations
 from typing import Sequence, Dict, List, Any, Tuple
 import pandas as pd
 from functools import lru_cache
-from midas.resources.structural_group import StructuralGroup
-from core.wind_load.compute_section_exposures import compute_section_exposures
 from midas.resources.element_beam_load import BeamLoadItem, BeamLoadResource
 from midas import elements, get_section_properties
+
+from core.wind_load.group_cache import get_group_element_ids
+
+@lru_cache(maxsize=1)
+def _get_all_elements_cached() -> dict:
+    """
+    Cached snapshot of /db/ELEM for this Python process.
+    Avoids repeated elements.get_all() calls.
+    """
+    return elements.get_all() or {}
+
+
+@lru_cache(maxsize=1)
+def get_section_properties_cached():
+    """
+    Cached wrapper around midas.get_section_properties().
+
+    All callers share a single MIDAS /db/SECT read.
+    """
+    return get_section_properties()
+
 
 # -------------------------------------------------
 # PROJECT HOOKS (you still need to implement these)
@@ -45,7 +64,7 @@ def _get_element_to_section_map(element_ids: List[int]) -> Dict[int, int]:
     Elements missing that key are skipped.
     """
     out: Dict[int, int] = {}
-    all_elem_data = elements.get_all()  # /db/ELEM dump
+    all_elem_data = _get_all_elements_cached()  # ← cached /db/ELEM
 
     for eid in element_ids:
         edata = all_elem_data.get(str(eid))
@@ -127,15 +146,12 @@ def build_uniform_pressure_beam_load_plan_for_group(
     High-level helper: resolve elements, sections, exposures from MIDAS
     then call build_uniform_pressure_beam_load_plan_from_depths().
     """
-
-    from midas.resources.structural_group import StructuralGroup
-    from midas import get_section_properties
     from core.wind_load.compute_section_exposures import compute_section_exposures
 
-    element_ids = StructuralGroup.get_elements_by_name(group_name)
+    element_ids = get_group_element_ids(group_name)
     elem_to_sect = _get_element_to_section_map(element_ids)
 
-    section_props_raw = get_section_properties()
+    section_props_raw = get_section_properties_cached()
     exposures_df = compute_section_exposures(
         section_props_raw,
         extra_exposure_y_default=extra_exposure_y_default,
@@ -182,7 +198,7 @@ def build_uniform_load_beam_load_plan_for_group(
 
     # 1) Resolve elements for this group
     if element_ids is None:
-        element_ids = StructuralGroup.get_elements_by_name(group_name)
+        element_ids = get_group_element_ids(group_name)
 
     element_ids = [int(e) for e in element_ids]
 
