@@ -39,11 +39,13 @@ from core.wind_load.live_wind_loads import (
 )
 
 from core.wind_load.structural_wind_loads import (
+    build_structural_wind_plans_for_deck_groups,   # NEW
     build_structural_wind_components_table,
     build_structural_wind_beam_load_plan_for_group,
 )
 
 from core.wind_load.substructure_wind_loads import (
+        build_substructure_wind_plans_for_groups,      # NEW
     build_substructure_wind_components_table,
     build_substructure_wind_beam_load_plan_for_group,  # ← add this
 )
@@ -607,84 +609,37 @@ class MainWindow(QMainWindow):
 
 
             # ============================================================
-            # 3) DECK groups: WS (deck formulas)
-            # ============================================================
-            for group_name in deck_groups:
-                group_name = str(group_name).strip()
-                if not group_name:
-                    continue
-
-                cached_ids = wind_db.group_members.get(group_name)
-                element_ids_for_plan = cached_ids if cached_ids else None
-
-                if allow_ws:
-                    ws_components_deck = build_structural_wind_components_table(
-                        group_name=group_name,
-                        angles=skew.angles,
-                        transverse=skew.transverse,
-                        longitudinal=skew.longitudinal,
-                        ws_cases_df=ws_df,
-                        wind_pressures_df=wind_db.wind_pressures,
-                    )
-
-                    if ws_components_deck is not None and not ws_components_deck.empty:
-                        plan_ws_deck = build_structural_wind_beam_load_plan_for_group(
-                            group_name=group_name,
-                            components_df=ws_components_deck,
-                            exposure_axis="y",
-                            element_ids=element_ids_for_plan,
-                            elements_in_model=elements_in_model,
-                            nodes_in_model=nodes_in_model,
-                        )
-                        if plan_ws_deck is not None and not plan_ws_deck.empty:
-                            if dbg and dbg.enabled:
-                                dbg.dump_plan(plan_ws_deck, label=f"WS_DECK_{group_name}", split_per_case=True)
-
-                            all_plans.append(plan_ws_deck)
-                            ws_deck_any = True
-                    else:
-                        print(
-                            f"[_on_assign_wind_loads_clicked] "
-                            f"No STRUCTURAL wind components for deck group '{group_name}'."
-                        )
-
-            # ============================================================
-            # 4) SUBSTRUCTURE groups: WS using substructure formulas
+            # 3) DECK groups: WS (deck formulas)  [moved to structural_wind_loads.py]
             # ============================================================
             if allow_ws:
-                for group_name in sub_groups:
-                    group_name = str(group_name).strip()
-                    if not group_name:
-                        continue
+                ws_deck_plans, ws_deck_any = build_structural_wind_plans_for_deck_groups(
+                    deck_groups=deck_groups,
+                    skew=skew,
+                    ws_cases_df=ws_df,
+                    wind_pressures_df=wind_db.wind_pressures,
+                    group_members=wind_db.group_members,
+                    elements_in_model=elements_in_model,
+                    nodes_in_model=nodes_in_model,
+                    dbg=dbg,
+                )
+                all_plans.extend(ws_deck_plans)
 
-                    cached_ids = wind_db.group_members.get(group_name)
-                    element_ids_for_plan = cached_ids if cached_ids else None
-
-                    sub_components_df = build_substructure_wind_components_table(
-                        group_name=group_name,
-                        ws_cases_df=ws_df,
-                        wind_pressures_df=wind_db.wind_pressures,
-                    )
-
-                    if sub_components_df is None or sub_components_df.empty:
-                        print(f"[WS_SUB] No components for substructure group '{group_name}'.")
-                        continue
-
-                    plan_ws_sub = build_substructure_wind_beam_load_plan_for_group(
-                        group_name=group_name,
-                        components_df=sub_components_df,
-                        extra_exposure_y_default=0.0,
-                        extra_exposure_y_by_id=None,
-                        element_ids=element_ids_for_plan,
-                        elements_in_model=elements_in_model,
-                        nodes_in_model=nodes_in_model,
-                    )
-                    if plan_ws_sub is not None and not plan_ws_sub.empty:
-                        if dbg and dbg.enabled:
-                            dbg.dump_plan(plan_ws_sub, label=f"WS_SUB_{group_name}", split_per_case=True)
-
-                        all_plans.append(plan_ws_sub)
-                        ws_sub_any = True
+            # ============================================================
+            # 4) SUBSTRUCTURE groups: WS (substructure formulas)  [moved to substructure_wind_loads.py]
+            # ============================================================
+            if allow_ws:
+                ws_sub_plans, ws_sub_any = build_substructure_wind_plans_for_groups(
+                    sub_groups=sub_groups,
+                    ws_cases_df=ws_df,
+                    wind_pressures_df=wind_db.wind_pressures,
+                    group_members=wind_db.group_members,
+                    elements_in_model=elements_in_model,
+                    nodes_in_model=nodes_in_model,
+                    dbg=dbg,
+                    extra_exposure_y_default=0.0,
+                    extra_exposure_y_by_id=None,
+                )
+                all_plans.extend(ws_sub_plans)
 
             # ============================================================
             # 5) Single apply to MIDAS (batch)

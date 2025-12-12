@@ -2,7 +2,7 @@
 # core/wind_load/structural_wind_loads.py
 from __future__ import annotations
 
-from typing import Sequence, Dict
+from typing import Sequence, Dict, Iterable, Mapping, Tuple, List
 import pandas as pd
 
 from core.wind_load.beam_load import (
@@ -302,3 +302,79 @@ def apply_structural_wind_loads_to_group(
     # ================================================================
 
     apply_beam_load_plan_to_midas(combined_plan)
+
+
+def build_structural_wind_plans_for_deck_groups(
+    *,
+    deck_groups: Iterable[str],
+    skew,  # expects .angles, .transverse, .longitudinal
+    ws_cases_df: pd.DataFrame,
+    wind_pressures_df: pd.DataFrame,
+    group_members: Mapping[str, list[int]] | None = None,
+    elements_in_model: dict | None = None,
+    nodes_in_model: dict | None = None,
+    dbg=None,  # DebugSink-like: .enabled, .dump_plan(df, label=..., split_per_case=...)
+) -> Tuple[List[pd.DataFrame], bool]:
+    """
+    Build STRUCTURAL wind (WS) plans for DECK groups only.
+
+    Mirrors the old MainWindow section:
+      - build_structural_wind_components_table(...)
+      - build_structural_wind_beam_load_plan_for_group(...)
+      - append plan(s)
+
+    Returns: (plans, ws_deck_any)
+    """
+    elements_in_model = elements_in_model or {}
+    nodes_in_model = nodes_in_model or {}
+    group_members = group_members or {}
+
+    if ws_cases_df is None or ws_cases_df.empty:
+        return [], False
+
+    # Validate minimal columns early (same assumption as your current GUI code)
+    needed = {"Case", "Angle", "Value"}
+    if missing := needed - set(ws_cases_df.columns):
+        raise ValueError(f"ws_cases_df missing columns: {missing}")
+
+    plans: list[pd.DataFrame] = []
+    ws_deck_any = False
+
+    for group_name in deck_groups:
+        group_name = str(group_name).strip()
+        if not group_name:
+            continue
+
+        cached_ids = group_members.get(group_name)
+        element_ids_for_plan = cached_ids if cached_ids else None
+
+        ws_components = build_structural_wind_components_table(
+            group_name=group_name,
+            angles=skew.angles,
+            transverse=skew.transverse,
+            longitudinal=skew.longitudinal,
+            ws_cases_df=ws_cases_df,
+            wind_pressures_df=wind_pressures_df,
+        )
+
+        if ws_components is None or ws_components.empty:
+            print(f"[WS_DECK] No components for deck group '{group_name}'.")
+            continue
+
+        plan_ws = build_structural_wind_beam_load_plan_for_group(
+            group_name=group_name,
+            components_df=ws_components,
+            exposure_axis="y",
+            element_ids=element_ids_for_plan,
+            elements_in_model=elements_in_model,
+            nodes_in_model=nodes_in_model,
+        )
+
+        if plan_ws is not None and not plan_ws.empty:
+            if dbg is not None and getattr(dbg, "enabled", False):
+                dbg.dump_plan(plan_ws, label=f"WS_DECK_{group_name}", split_per_case=True)
+
+            plans.append(plan_ws)
+            ws_deck_any = True
+
+    return plans, ws_deck_any
