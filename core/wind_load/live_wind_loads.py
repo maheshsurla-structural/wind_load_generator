@@ -1,9 +1,10 @@
 # core/wind_load/live_wind_loads.py
 from __future__ import annotations
 
-from typing import Sequence, List, Tuple
+from typing import Sequence
+import re
+
 import pandas as pd
-import re  # ← NEW
 
 from core.wind_load.beam_load import (
     build_uniform_load_beam_load_plan_for_group,
@@ -17,49 +18,65 @@ from core.wind_load.group_cache import get_group_element_ids
 # Helpers
 # ---------------------------------------------------------------------------
 
+_QUADRANT_RE = re.compile(r"(?:_Q|Q)([1-4])\b", re.I)
+
+# returns (t_sign, l_sign) for each quadrant
+_QUAD_SIGNS = {
+    1: (+1, +1),
+    2: (+1, -1),
+    3: (-1, -1),
+    4: (-1, +1),
+}
+
+_COMPONENTS = (
+    ("transverse", "LY"),    # Transverse → local Y
+    ("longitudinal", "LX"),  # Longitudinal → local X
+)
+
+
 def _extract_quadrant_from_name(name: str) -> int:
     """
-    Look for a quadrant marker in the load case name.
-
-    Expected patterns (case-insensitive), e.g.:
-        "WL_A15_Q1", "WL_A30_Q2", "MyNameQ3", "X_Q4_extra"
-
-    Returns 1..4, defaulting to 1 if none is found.
+    Extract quadrant (Q1..Q4) from a load case name. Defaults to 1 if absent.
+    Matches both "_Q3" and "Q3" patterns.
     """
-    s = (name or "").upper()
-
-    # First try the common "_Q1" style
-    m = re.search(r"_Q([1-4])\b", s)
-    if m:
-        return int(m.group(1))
-
-    # Fallback: bare "Q1".."Q4" anywhere
-    m = re.search(r"\bQ([1-4])\b", s)
-    if m:
-        return int(m.group(1))
-
-    # Default: treat as Q1
-    return 1
+    m = _QUADRANT_RE.search(name or "")
+    return int(m.group(1)) if m else 1
 
 
 def _apply_quadrant_signs(q: int, t: float, l: float) -> tuple[float, float]:
     """
-    Apply sign conventions per quadrant:
-
-        Q1:  L+, T+
-        Q2:  L-, T+
-        Q3:  L-, T-
-        Q4:  L+, T-
+    Apply sign conventions per quadrant to base (Q1) transverse/longitudinal
+    coefficients and return (t, l).
     """
-    q = int(q)
-    if q == 2:
-        return t, -l
-    if q == 3:
-        return -t, -l
-    if q == 4:
-        return -t, l
-    # default Q1
-    return t, l
+    ts, ls = _QUAD_SIGNS.get(int(q), _QUAD_SIGNS[1])
+    return ts * t, ls * l
+
+
+def _validate_wl_cases_df(wl_cases_df: pd.DataFrame) -> pd.DataFrame:
+    needed = {"Case", "Angle", "Value"}
+    missing = needed - set(wl_cases_df.columns)
+    if missing:
+        raise ValueError(f"wl_cases_df is missing columns: {missing}")
+
+    df = wl_cases_df.copy()
+
+    # Coerce Angle
+    df["Angle"] = pd.to_numeric(df["Angle"], errors="coerce")
+    bad_angle = df["Angle"].isna()
+    if bad_angle.any():
+        raise ValueError(
+            f"wl_cases_df has non-numeric Angle at rows: {df.index[bad_angle].tolist()}"
+        )
+
+    # Coerce Value (case name)
+    df["Value"] = df["Value"].astype(str).str.strip()
+    empty = df["Value"].eq("") | df["Value"].isna()
+    if empty.any():
+        raise ValueError(
+            f"wl_cases_df has empty Value at rows: {df.index[empty].tolist()}"
+        )
+
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +90,7 @@ def build_live_wind_components_table(
     longitudinal: Sequence[float],
     wl_cases_df: pd.DataFrame,
 ) -> pd.DataFrame:
+
     """
     Combine ControlData 'wind_live' coefficients with the WL load
     cases defined in PairWindLoadCases.
@@ -93,11 +111,8 @@ def build_live_wind_components_table(
             columns=["load_case", "load_group", "angle", "transverse", "longitudinal"]
         )
 
-    # Ensure the columns we expect exist
-    needed_cols = {"Case", "Angle", "Value"}
-    missing = needed_cols - set(wl_cases_df.columns)
-    if missing:
-        raise ValueError(f"wl_cases_df is missing columns: {missing}")
+    # Validate + normalize external WL cases table
+    wl_cases_df = _validate_wl_cases_df(wl_cases_df)
 
     # Map angle -> (Tx, Lx) for the *base* (Q1) coefficients
     if not (len(angles) == len(transverse) == len(longitudinal)):
@@ -110,9 +125,9 @@ def build_live_wind_components_table(
     rows: list[dict] = []
     for _, row in wl_cases_df.iterrows():
         ang = int(row["Angle"])
-        lcname = str(row["Value"] or "").strip()
-        if not lcname:
-            continue
+
+        # Value is already validated + stripped by _validate_wl_cases_df
+        lcname = str(row["Value"])
 
         coeffs = angle_to_coeffs.get(ang)
         if coeffs is None:
@@ -121,10 +136,9 @@ def build_live_wind_components_table(
 
         base_t, base_l = coeffs
 
-        # --- NEW: quadrant-based sign handling -----------------------------
+        # Quadrant-based sign handling
         q = _extract_quadrant_from_name(lcname)
         t, l = _apply_quadrant_signs(q, base_t, base_l)
-        # -------------------------------------------------------------------
 
         rows.append(
             {
@@ -143,7 +157,6 @@ def build_live_wind_components_table(
     return out
 
 
-
 # ---------------------------------------------------------------------------
 # 2) Build beam-load plan for a structural group (WL only)
 # ---------------------------------------------------------------------------
@@ -154,9 +167,10 @@ def build_live_wind_beam_load_plan_for_group(
     *,
     eccentricity: float = 6.0,
     element_ids: list[int] | None = None,
-    elements_in_model=None,   # accepted for API symmetry, not used here
-    nodes_in_model=None,      # accepted for API symmetry, not used here
+    elements_in_model=None,   # accepted for API compatibility (unused)
+    nodes_in_model=None,      # accepted for API compatibility (unused)
 ) -> pd.DataFrame:
+
 
     """
     Take the WL components (transverse/longitudinal line loads) and build
@@ -175,47 +189,30 @@ def build_live_wind_beam_load_plan_for_group(
     else:
         element_ids = [int(e) for e in element_ids]
 
-
-
     if not element_ids:
         print(f"[build_live_wind_beam_load_plan_for_group] Group {group_name} has no elements")
         return pd.DataFrame()
-
-
 
     plans: list[pd.DataFrame] = []
 
     for _, row in components_df.iterrows():
         lcname = str(row["load_case"])
         lgname = str(row["load_group"] or lcname)
-        t = float(row["transverse"])
-        l = float(row["longitudinal"])
 
-        # Transverse → local Y
-        if abs(t) > 1e-9:
+        for col, direction in _COMPONENTS:
+            val = float(row[col])
+            if abs(val) <= 1e-9:
+                continue
+
             plans.append(
                 build_uniform_load_beam_load_plan_for_group(
                     group_name=group_name,
                     load_case_name=lcname,
-                    line_load=t,
-                    udl_direction="LY",
+                    line_load=val,
+                    udl_direction=direction,
                     load_group_name=lgname,
                     element_ids=element_ids,
                     eccentricity=eccentricity,   # 6 ft by default
-                )
-            )
-
-        # Longitudinal → local X
-        if abs(l) > 1e-9:
-            plans.append(
-                build_uniform_load_beam_load_plan_for_group(
-                    group_name=group_name,
-                    load_case_name=lcname,
-                    line_load=l,
-                    udl_direction="LX",
-                    load_group_name=lgname,
-                    element_ids=element_ids,
-                    eccentricity=eccentricity,
                 )
             )
 
@@ -227,7 +224,6 @@ def build_live_wind_beam_load_plan_for_group(
     combined_plan.sort_values(["load_case", "element_id"], inplace=True)
     combined_plan.reset_index(drop=True, inplace=True)
     return combined_plan
-
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +251,3 @@ def apply_live_wind_loads_to_group(group_name: str, components_df: pd.DataFrame)
     # ================================================================
 
     apply_beam_load_plan_to_midas(combined_plan)
-
-
-
