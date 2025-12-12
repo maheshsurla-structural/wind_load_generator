@@ -1,7 +1,7 @@
 # core/wind_load/live_wind_loads.py
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Sequence, Iterable, Mapping
 import re
 
 import pandas as pd
@@ -53,6 +53,7 @@ def _apply_quadrant_signs(q: int, t: float, l: float) -> tuple[float, float]:
 
 
 def _validate_wl_cases_df(wl_cases_df: pd.DataFrame) -> pd.DataFrame:
+
     needed = {"Case", "Angle", "Value"}
     missing = needed - set(wl_cases_df.columns)
     if missing:
@@ -60,7 +61,7 @@ def _validate_wl_cases_df(wl_cases_df: pd.DataFrame) -> pd.DataFrame:
 
     df = wl_cases_df.copy()
 
-    # Coerce Angle
+    # Check if the Angle input is valid numeric
     df["Angle"] = pd.to_numeric(df["Angle"], errors="coerce")
     bad_angle = df["Angle"].isna()
     if bad_angle.any():
@@ -68,13 +69,16 @@ def _validate_wl_cases_df(wl_cases_df: pd.DataFrame) -> pd.DataFrame:
             f"wl_cases_df has non-numeric Angle at rows: {df.index[bad_angle].tolist()}"
         )
 
-    # Coerce Value (case name)
-    df["Value"] = df["Value"].astype(str).str.strip()
-    empty = df["Value"].eq("") | df["Value"].isna()
+    # Check Load case name is valid input
+    s = df["Value"]
+    empty = s.isna() | (s.astype(str).str.strip() == "")
     if empty.any():
         raise ValueError(
             f"wl_cases_df has empty Value at rows: {df.index[empty].tolist()}"
         )
+
+    df["Value"] = s.astype(str).str.strip()
+
 
     return df
 
@@ -251,3 +255,76 @@ def apply_live_wind_loads_to_group(group_name: str, components_df: pd.DataFrame)
     # ================================================================
 
     apply_beam_load_plan_to_midas(combined_plan)
+
+
+
+
+def build_live_wind_plans_for_deck_groups(
+    *,
+    deck_groups: Iterable[str],
+    wind_live,  # expects .angles, .transverse, .longitudinal
+    wl_cases_df: pd.DataFrame,
+    group_members: Mapping[str, list[int]] | None = None,
+    elements_in_model: dict | None = None,
+    nodes_in_model: dict | None = None,
+    dbg=None,  # DebugSink | None (kept generic to avoid GUI import)
+) -> tuple[list[pd.DataFrame], bool]:
+    """
+    Build LIVE wind (WL) beam-load plans for all deck groups.
+
+    Args:
+        deck_groups: iterable of deck group names
+        wind_live: object with attributes angles/transverse/longitudinal (Control Data)
+        wl_cases_df: DataFrame with columns Case/Angle/Value
+        group_members: optional dict-like mapping group_name -> element_ids
+        elements_in_model/nodes_in_model: accepted for API compatibility (unused in builder)
+        dbg: optional debug sink (must have .enabled and .dump_plan())
+
+    Returns:
+        (plans, wl_applied_any)
+    """
+    elements_in_model = elements_in_model or {}
+    nodes_in_model = nodes_in_model or {}
+    group_members = group_members or {}
+
+    angles = getattr(wind_live, "angles", None)
+    if wl_cases_df is None or wl_cases_df.empty or angles is None or len(angles) == 0:
+        return [], False
+
+    # Build WL components once (shared for all deck groups)
+    live_components_df = build_live_wind_components_table(
+        angles=angles,
+        transverse=wind_live.transverse,
+        longitudinal=wind_live.longitudinal,
+        wl_cases_df=wl_cases_df,
+    )
+    if live_components_df.empty:
+        return [], False
+
+    plans: list[pd.DataFrame] = []
+    wl_applied_any = False
+
+    for group_name in deck_groups:
+        group_name = str(group_name).strip()
+        if not group_name:
+            continue
+
+        cached_ids = group_members.get(group_name)
+        element_ids_for_plan = cached_ids if cached_ids else None
+
+        plan_wl = build_live_wind_beam_load_plan_for_group(
+            group_name=group_name,
+            components_df=live_components_df,
+            element_ids=element_ids_for_plan,
+            elements_in_model=elements_in_model,
+            nodes_in_model=nodes_in_model,
+        )
+
+        if plan_wl is not None and not plan_wl.empty:
+            if dbg is not None and getattr(dbg, "enabled", False):
+                dbg.dump_plan(plan_wl, label=f"WL_{group_name}", split_per_case=True)
+
+            plans.append(plan_wl)
+            wl_applied_any = True
+
+    return plans, wl_applied_any
