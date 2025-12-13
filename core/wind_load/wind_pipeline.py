@@ -7,7 +7,7 @@ import pandas as pd
 from core.wind_load.debug_utils import summarize_plan
 from core.wind_load.beam_load import apply_beam_load_plan_to_midas
 
-from core.wind_load.live_wind_loads import build_live_wind_plans_for_deck_groups
+from core.wind_load.live_wind_loads import build_wl_beam_load_plans_for_deck_groups
 from core.wind_load.structural_wind_loads import build_structural_wind_plans_for_deck_groups
 from core.wind_load.substructure_wind_loads import build_substructure_wind_plans_for_groups
 
@@ -149,7 +149,7 @@ def build_all_wind_plans(
     all_plans: list[pd.DataFrame] = []
 
     # --- WL (live wind) for deck groups ---
-    wl_plans, flags["wl"] = build_live_wind_plans_for_deck_groups(
+    wl_plans, flags["wl"] = build_wl_beam_load_plans_for_deck_groups(
         deck_groups=deck_groups,
         wind_live=wind_live,
         wl_cases_df=wl_df,

@@ -4,7 +4,7 @@
 This module builds **LIVE wind (WL)** beam line-loads for MIDAS by combining:
 
 - **Control Data coefficients** (`wind_live.angles`, `wind_live.transverse`, `wind_live.longitudinal`)
-- **WL case rows** (`wl_cases_df` with `Case`, `Angle`, `Value`)
+- **WL case rows** (`wl_cases_df` with columns `Case`, `Angle`, `Value`)
 
 It produces two main intermediate artifacts:
 
@@ -21,7 +21,8 @@ It also provides:
 
 ### 1) WL case naming drives quadrant sign logic
 The string stored in `wl_cases_df["Value"]` is expected to be the **MIDAS load case name**, and it often includes a quadrant marker:
-- `...Q1`, `...Q2`, `...Q3`, `...Q4` (or `_Q1`, `_Q2`, ...)
+
+- `...Q1`, `...Q2`, `...Q3`, `...Q4` (or `_Q1`, `_Q2`, `_Q3`, `_Q4`)
 
 The quadrant is parsed from the name and used to flip signs of transverse/longitudinal base coefficients.
 
@@ -31,8 +32,11 @@ Quadrant markers in the WL case name change signs using `_QUAD_SIGNS`.
 
 ### 3) Component-to-direction mapping
 The module assumes:
+
 - `transverse` acts in MIDAS local **Y** direction (`LY`)
 - `longitudinal` acts in MIDAS local **X** direction (`LX`)
+
+This mapping is centralized in `_COMPONENTS`.
 
 ---
 
@@ -82,7 +86,7 @@ _QUADRANT_RE = re.compile(r"(?:_Q|Q)([1-4])\b", re.I)
 ```
 
 What it does:
-- Finds `Q1..Q4` in a string.
+- Finds `Q1..Q4` in a string (case-insensitive).
 - Supports both patterns:
   - `_Q3`
   - `Q3`
@@ -137,7 +141,7 @@ Why it matters:
 
 ---
 
-## `_extract_quadrant_from_name(name: str) -> int`
+## `_parse_quadrant_from_load_case_name(name: str) -> int`
 
 ```python
 m = _QUADRANT_RE.search(name or "")
@@ -154,7 +158,7 @@ Why it matters:
 
 ---
 
-## `_apply_quadrant_signs(q: int, t: float, l: float) -> tuple[float, float]`
+## `_apply_quadrant_sign_convention(q: int, t: float, l: float) -> tuple[float, float]`
 
 ```python
 ts, ls = _QUAD_SIGNS.get(int(q), _QUAD_SIGNS[1])
@@ -172,7 +176,7 @@ Why it matters:
 
 ---
 
-## `_validate_wl_cases_df(wl_cases_df: pd.DataFrame) -> pd.DataFrame`
+## `_normalize_and_validate_wl_cases_df(wl_cases_df: pd.DataFrame) -> pd.DataFrame`
 
 ### Purpose
 Validates and normalizes the WL “cases table” coming from GUI/user input.
@@ -205,7 +209,7 @@ What it does:
 
 ---
 
-### 3) Coerce `Angle` to numeric
+### 3) Coerce `Angle` to numeric + validate
 
 ```python
 df["Angle"] = pd.to_numeric(df["Angle"], errors="coerce")
@@ -221,11 +225,31 @@ What it does:
 - Invalid angle values become NaN and are rejected.
 
 Why it matters:
-- Ensures downstream code can safely do `int(row["Angle"])`.
+- Ensures downstream code can safely treat Angle as numeric.
 
 ---
 
-### 4) Validate + normalize `Value`
+### 4) Enforce integer-like `Angle`, then cast to `int`
+
+```python
+non_int = (df["Angle"] % 1 != 0)
+if non_int.any():
+    raise ValueError(
+        f"wl_cases_df has non-integer Angle at rows: {df.index[non_int].tolist()}"
+    )
+df["Angle"] = df["Angle"].astype(int)
+```
+
+What it does:
+- Rejects angles like `15.5`.
+- Converts angles like `15.0` into `15`.
+
+Why it matters:
+- Downstream logic expects exact integer angles (e.g., 0, 15, 30, 45).
+
+---
+
+### 5) Validate + normalize `Value`
 
 ```python
 s = df["Value"]
@@ -243,12 +267,12 @@ What it does:
 - Normalizes `Value` into a stripped string.
 
 Why it matters:
-- `Value` becomes `load_case` names used downstream.
+- `Value` becomes the load case name used downstream.
 - Quadrant extraction depends on `Value`.
 
 ---
 
-## 1) `build_live_wind_components_table(...)`
+## 1) `build_wl_case_components_from_control_data(...)`
 
 ### Purpose
 Builds a “components table” by combining:
@@ -282,7 +306,7 @@ What it does:
 ### 2) Validate WL case table
 
 ```python
-wl_cases_df = _validate_wl_cases_df(wl_cases_df)
+wl_cases_df = _normalize_and_validate_wl_cases_df(wl_cases_df)
 ```
 
 What it does:
@@ -327,7 +351,7 @@ Why it matters:
 
 ```python
 for _, row in wl_cases_df.iterrows():
-    ang = int(row["Angle"])
+    ang = row["Angle"]
     lcname = str(row["Value"])
 
     coeffs = angle_to_coeffs.get(ang)
@@ -348,8 +372,8 @@ Why it matters:
 
 ```python
 base_t, base_l = coeffs
-q = _extract_quadrant_from_name(lcname)
-t, l = _apply_quadrant_signs(q, base_t, base_l)
+q = _parse_quadrant_from_load_case_name(lcname)
+t, l = _apply_quadrant_sign_convention(q, base_t, base_l)
 ```
 
 What it does:
@@ -392,7 +416,7 @@ What it does:
 
 ---
 
-## 2) `build_live_wind_beam_load_plan_for_group(...)`
+## 2) `build_wl_beam_load_plan_for_group(...)`
 
 ### Purpose
 Takes a components table and builds a **combined beam-load plan** DataFrame for a single structural group.
@@ -496,10 +520,10 @@ What it does:
 
 ---
 
-## 3) `apply_live_wind_loads_to_group(group_name, components_df)`
+## 3) `apply_wl_beam_loads_to_group(group_name, components_df)`
 
 ### Purpose
-Backwards-compatible wrapper that:
+Wrapper that:
 - builds the plan
 - optionally summarizes/debugs it
 - applies it to MIDAS
@@ -509,7 +533,7 @@ Backwards-compatible wrapper that:
 ### 1) Build plan
 
 ```python
-combined_plan = build_live_wind_beam_load_plan_for_group(group_name, components_df)
+combined_plan = build_wl_beam_load_plan_for_group(group_name, components_df)
 ```
 
 ---
@@ -554,7 +578,7 @@ What it does:
 
 ---
 
-## 4) `build_live_wind_plans_for_deck_groups(...)`
+## 4) `build_wl_beam_load_plans_for_deck_groups(...)`
 
 ### Purpose
 Builds WL plans for multiple deck groups and returns them, without applying to MIDAS.
@@ -598,7 +622,7 @@ What it does:
 ### 3) Build components once (shared by all groups)
 
 ```python
-live_components_df = build_live_wind_components_table(
+components_df = build_wl_case_components_from_control_data(
     angles=angles,
     transverse=wind_live.transverse,
     longitudinal=wind_live.longitudinal,
@@ -645,9 +669,9 @@ Why it matters:
 ### 6) Build plan for this group
 
 ```python
-plan_wl = build_live_wind_beam_load_plan_for_group(
+plan_wl = build_wl_beam_load_plan_for_group(
     group_name=group_name,
-    components_df=live_components_df,
+    components_df=components_df,
     element_ids=element_ids_for_plan,
     elements_in_model=elements_in_model,
     nodes_in_model=nodes_in_model,
