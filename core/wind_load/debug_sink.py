@@ -1,4 +1,3 @@
-# core/wind_load/debug_sink.py
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -51,6 +50,16 @@ def _item_to_dict(item: Any) -> Dict[str, Any]:
 
 @dataclass
 class DebugSink:
+    """
+    Run-scoped debug artifact recorder.
+
+    When enabled, creates a run directory and writes:
+      - manifest.json
+      - plans/*.json (+ per-case splits)
+      - components/*.json
+      - midas_chunks/*chunk_###.json
+      - summaries/*.json (new)
+    """
     enabled: bool = False
     base_dir: Path = field(default_factory=lambda: Path(__file__).resolve().parent / "wind_debug")
     run_label: str = "WIND"
@@ -78,9 +87,7 @@ class DebugSink:
     def _add_artifact(self, kind: str, path: Path, meta: Dict[str, Any] | None = None) -> None:
         if not self.enabled:
             return
-        self.manifest["artifacts"].append(
-            {"kind": kind, "path": str(path), "meta": meta or {}}
-        )
+        self.manifest["artifacts"].append({"kind": kind, "path": str(path), "meta": meta or {}})
         self._write_manifest()
 
     def _write_manifest(self) -> None:
@@ -128,7 +135,11 @@ class DebugSink:
                         "data": sub.to_dict(orient="records"),
                     },
                 )
-                self._add_artifact("plan_case", lc_path, {"label": label, "load_case": str(lc), "rows": int(len(sub))})
+                self._add_artifact(
+                    "plan_case",
+                    lc_path,
+                    {"label": label, "load_case": str(lc), "rows": int(len(sub))},
+                )
 
     def dump_components(self, df: pd.DataFrame, *, label: str) -> None:
         if not self.enabled:
@@ -183,3 +194,14 @@ class DebugSink:
             out_path,
             {"label": label, "chunk_index": int(chunk_index), "count": n, "reason": reason},
         )
+
+    def dump_summary(self, summary: Dict[str, Any], *, label: str) -> None:
+        """
+        Store a compact summary dict (typically from summarize_plan()).
+        """
+        if not self.enabled:
+            return
+        safe_label = _safe_name(label)
+        out_path = self.run_dir / "summaries" / f"{safe_label}.json"
+        _json_dump(out_path, {"label": label, **(summary or {})})
+        self._add_artifact("summary", out_path, {"label": label})

@@ -1,23 +1,8 @@
-# core/wind_load/debug_utils.py
-
 from __future__ import annotations
 
-from pathlib import Path
-from datetime import datetime
-import re
 from typing import Dict, Any
 
 import pandas as pd
-
-# -------------------------------------------------------------------
-# Paths
-# -------------------------------------------------------------------
-
-DEBUG_DIR = Path(__file__).resolve().parent / "wind_debug"
-DEBUG_DIR.mkdir(exist_ok=True)
-
-DEBUG_LOG_FILE = DEBUG_DIR / "wind_debug.txt"
-
 
 # -------------------------------------------------------------------
 # Coloring helpers (ANSI)
@@ -40,48 +25,85 @@ def color(text: str, name: str) -> str:
     return f"{code}{text}{end}"
 
 
-def _safe_case_name(name: str) -> str:
-    """
-    Turn a load-case name into a safe filename fragment.
-    """
-    s = str(name).strip()
-    s = re.sub(r"[^\w\-\.]+", "_", s)
-    return s or "unnamed"
-
-
-def _now_str() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
 # -------------------------------------------------------------------
-# Plan summary + optional CSV dump + logging
+# Plan summary (NO file writing)
 # -------------------------------------------------------------------
 
 def summarize_plan(
     plan_df: pd.DataFrame,
     label: str,
     *,
-    dump_csv_per_case: bool = False,
-    write_log: bool = True,
+    print_summary: bool = False,
     max_cases_print: int = 30,
-    print_summary: bool = False,   # default: no console printing
-) -> None:
+    sink=None,                 # DebugSink-like (optional). Avoid importing GUI side.
+    dump_to_sink: bool = True, # if sink.enabled and sink.dump_summary exists
+) -> Dict[str, Any]:
     """
-    Pretty-print a summary of a beam-load plan, optionally:
-      - writing per-load-case CSVs
-      - logging a compact summary to wind_debug.txt
+    Compute a compact summary of a beam-load plan.
 
-    `print_summary` controls console output.
+    - If print_summary=True: prints a readable summary to console.
+    - If sink is provided (DebugSink-like) and enabled: dumps summary JSON into the run.
+
+    Returns
+    -------
+    dict with keys:
+      - rows
+      - n_cases
+      - case_counts
+      - case_dir_counts
     """
-
     if plan_df is None or plan_df.empty:
+        summary = {"rows": 0, "n_cases": 0, "case_counts": {}, "case_dir_counts": {}}
         if print_summary:
             print(color(f"[DEBUG:{label}] plan_df is empty", "yellow"))
-        return
+        _maybe_dump_summary_to_sink(summary, label=label, sink=sink, dump_to_sink=dump_to_sink)
+        return summary
 
-    total_rows = len(plan_df)
-    unique_cases = plan_df["load_case"].unique()
-    n_cases = len(unique_cases)
+    total_rows = int(len(plan_df))
+
+    if "load_case" in plan_df.columns:
+        n_cases = int(plan_df["load_case"].dropna().nunique())
+    else:
+        n_cases = 0
+
+
+    # Per-load-case counts (unique elements)
+    if {"load_case", "element_id"}.issubset(plan_df.columns):
+        case_counts_s = (
+            plan_df.groupby("load_case")["element_id"]
+            .nunique()
+            .sort_index()
+        )
+        case_counts = {str(k): int(v) for k, v in case_counts_s.items()}
+    else:
+        case_counts_s = None
+        case_counts = {}
+
+    # Per-load-case & direction counts (JSON-safe nested dict)
+    if {"load_case", "load_direction", "element_id"}.issubset(plan_df.columns):
+        case_dir_counts_s = (
+            plan_df.groupby(["load_case", "load_direction"])["element_id"]
+            .nunique()
+            .sort_index()
+        )
+
+        # JSON-safe: { "CASE1": {"LY": 123, "LX": 123}, "CASE2": {...} }
+        case_dir_counts: Dict[str, Dict[str, int]] = {}
+        for (lc, direction), v in case_dir_counts_s.items():
+            lc = str(lc)
+            direction = str(direction)
+            case_dir_counts.setdefault(lc, {})[direction] = int(v)
+    else:
+        case_dir_counts_s = None
+        case_dir_counts = {}
+
+
+    summary = {
+        "rows": total_rows,
+        "n_cases": n_cases,
+        "case_counts": case_counts,
+        "case_dir_counts": case_dir_counts,
+    }
 
     if print_summary:
         print(
@@ -92,63 +114,40 @@ def summarize_plan(
             )
         )
 
-    # Per-load-case counts
-    case_counts = (
-        plan_df.groupby("load_case")["element_id"]
-        .nunique()
-        .sort_index()
-    )
-    # Per-load-case & direction
-    case_dir_counts = (
-        plan_df.groupby(["load_case", "load_direction"])["element_id"]
-        .nunique()
-        .sort_index()
-    )
+        if case_counts_s is not None:
+            print(color("  Element count per load_case:", "bold"))
+            if len(case_counts_s) <= max_cases_print:
+                print(case_counts_s)
+            else:
+                print(case_counts_s.head(max_cases_print))
+                print(color(f"  ... ({len(case_counts_s) - max_cases_print} more)", "yellow"))
 
-    if print_summary:
-        print(color("  Element count per load_case:", "bold"))
-        if len(case_counts) <= max_cases_print:
-            print(case_counts)
-        else:
-            print(case_counts.head(max_cases_print))
-            print(color(f"  ... ({len(case_counts) - max_cases_print} more)", "yellow"))
+        if case_dir_counts_s is not None:
+            print(color("\n  Element count per (load_case, direction):", "bold"))
+            if len(case_dir_counts_s) <= max_cases_print:
+                print(case_dir_counts_s)
+            else:
+                print(case_dir_counts_s.head(max_cases_print))
+                print(color(f"  ... ({len(case_dir_counts_s) - max_cases_print} more)", "yellow"))
 
-        print(color("\n  Element count per (load_case, direction):", "bold"))
-        if len(case_dir_counts) <= max_cases_print:
-            print(case_dir_counts)
-        else:
-            print(case_dir_counts.head(max_cases_print))
-            print(color(f"  ... ({len(case_dir_counts) - max_cases_print} more)", "yellow"))
+        print()
 
-    # Optional: per-load-case CSVs
-    if dump_csv_per_case:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        for lc in unique_cases:
-            safe_lc = _safe_case_name(lc)
-            out_path = DEBUG_DIR / f"{ts}_{label}_{safe_lc}.csv"
-            sub = plan_df[plan_df["load_case"] == lc]
-            sub.to_csv(out_path, index=False)
-        if print_summary:
-            print(
-                color(
-                    f"\n  [DEBUG:{label}] wrote per-load-case CSVs to {DEBUG_DIR}",
-                    "green",
-                )
-            )
+    _maybe_dump_summary_to_sink(summary, label=label, sink=sink, dump_to_sink=dump_to_sink)
+    return summary
 
-    # Optional: compact log line
-    if write_log:
-        with DEBUG_LOG_FILE.open("a", encoding="utf-8") as f:
-            f.write(
-                f"[{_now_str()}] {label}: rows={total_rows}, "
-                f"cases={n_cases}\n"
-            )
-            for lc, cnt in case_counts.items():
-                f.write(f"    {lc}: {cnt} elements\n")
 
-    if print_summary:
-        print()  # blank line
-    return
+def _maybe_dump_summary_to_sink(summary: Dict[str, Any], *, label: str, sink=None, dump_to_sink: bool) -> None:
+    if not dump_to_sink:
+        return
+    if sink is None or not getattr(sink, "enabled", False):
+        return
+    dump_fn = getattr(sink, "dump_summary", None)
+    if callable(dump_fn):
+        try:
+            dump_fn(summary, label=label)
+        except Exception:
+            # Debug should never crash main logic
+            pass
 
 
 # -------------------------------------------------------------------
@@ -171,7 +170,6 @@ def compare_plan_element_patterns(
 
     Returns a dict with basic mismatch info, so you can also assert() in tests.
     """
-
     result: Dict[str, Any] = {
         "extra_elements_in_a": [],
         "extra_elements_in_b": [],
@@ -186,6 +184,10 @@ def compare_plan_element_patterns(
         print(color(f"[COMPARE] {label_b} plan is empty", "red"))
         return result
 
+    if "element_id" not in plan_a.columns or "element_id" not in plan_b.columns:
+        print(color("[COMPARE] Missing 'element_id' column in one of the plans.", "red"))
+        return result
+
     elems_a = set(map(int, plan_a["element_id"].unique()))
     elems_b = set(map(int, plan_b["element_id"].unique()))
 
@@ -195,11 +197,7 @@ def compare_plan_element_patterns(
     result["extra_elements_in_a"] = extra_a
     result["extra_elements_in_b"] = extra_b
 
-    print(
-        color(
-            f"\n[COMPARE] Element coverage {label_a} vs {label_b}", "magenta"
-        )
-    )
+    print(color(f"\n[COMPARE] Element coverage {label_a} vs {label_b}", "magenta"))
     print(f"  {label_a}: {len(elems_a)} unique elements")
     print(f"  {label_b}: {len(elems_b)} unique elements")
     print(f"  Common: {len(elems_a & elems_b)} elements")
@@ -221,7 +219,11 @@ def compare_plan_element_patterns(
             )
         )
 
-    # Per-load-case counts
+    if "load_case" not in plan_a.columns or "load_case" not in plan_b.columns:
+        print(color("[COMPARE] Missing 'load_case' column in one of the plans.", "red"))
+        print()
+        return result
+
     counts_a = (
         plan_a.groupby("load_case")["element_id"]
         .nunique()
@@ -240,13 +242,8 @@ def compare_plan_element_patterns(
         ca = int(counts_a[lc])
         cb = int(counts_b[lc])
         if ca != cb:
-            print(
-                color(
-                    f"  {lc}: {label_a}={ca}, {label_b}={cb}  <-- MISMATCH",
-                    "red",
-                )
-            )
-            result["mismatched_cases"][lc] = (ca, cb)
+            print(color(f"  {lc}: {label_a}={ca}, {label_b}={cb}  <-- MISMATCH", "red"))
+            result["mismatched_cases"][str(lc)] = (ca, cb)
         else:
             print(f"  {lc}: {label_a}={ca}, {label_b}={cb}")
 
@@ -255,4 +252,3 @@ def compare_plan_element_patterns(
 
     print()
     return result
-

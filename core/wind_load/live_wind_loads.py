@@ -245,9 +245,19 @@ def build_wl_beam_load_plan_for_group(
 # 3) Apply the plan to MIDAS (wrapper)
 # ---------------------------------------------------------------------------
 
-def apply_wl_beam_loads_to_group(group_name: str, components_df: pd.DataFrame) -> None:
+def apply_wl_beam_loads_to_group(
+    group_name: str,
+    components_df: pd.DataFrame,
+    *,
+    dbg=None,
+    print_summary: bool = False,
+) -> None:
     """
     Convenience wrapper: build the WL beam-load plan and send it to MIDAS.
+
+    Changes:
+      - summarize_plan() no longer writes CSV/log; it can optionally dump a summary to DebugSink.
+      - apply_beam_load_plan_to_midas() is called with debug/debug_label for chunk dumping.
     """
     combined_plan = build_wl_beam_load_plan_for_group(group_name, components_df)
 
@@ -255,16 +265,19 @@ def apply_wl_beam_loads_to_group(group_name: str, components_df: pd.DataFrame) -
         print(f"[apply_wl_beam_loads_to_group] No loads for group {group_name}")
         return
 
-    # === DEBUG: summary, optional CSV + log ==========================
     summarize_plan(
         combined_plan,
         label=f"WL_{group_name}",
-        dump_csv_per_case=False,  # set True if you want per-case CSVs
-        write_log=True,
+        sink=dbg,
+        print_summary=print_summary,
     )
-    # ================================================================
 
-    apply_beam_load_plan_to_midas(combined_plan)
+    apply_beam_load_plan_to_midas(
+        combined_plan,
+        debug=dbg,
+        debug_label=f"WL_{group_name}",
+    )
+
 
 
 # ---------------------------------------------------------------------------

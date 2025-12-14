@@ -15,9 +15,10 @@ from core.wind_load.group_cache import get_group_element_ids
 from core.wind_load.compute_section_exposures import compute_section_exposures
 
 from core.wind_load.live_wind_loads import (
-    _extract_quadrant_from_name,
-    _apply_quadrant_signs,
+    _parse_quadrant_from_load_case_name,
+    _apply_quadrant_sign_convention,
 )
+
 
 from core.wind_load.debug_utils import summarize_plan
 
@@ -120,8 +121,9 @@ def build_structural_wind_components_table(
         Pz = float(sub.iloc[0]["Pz (ksf)"])
 
         # Quadrant-based sign handling – same as WL
-        q = _extract_quadrant_from_name(lcname)
-        t_coeff, l_coeff = _apply_quadrant_signs(q, base_t, base_l)
+        q = _parse_quadrant_from_load_case_name(lcname)
+        t_coeff, l_coeff = _apply_quadrant_sign_convention(q, base_t, base_l)
+
 
         # Directional pressures (ksf, already signed)
         p_trans = Pz * t_coeff
@@ -274,12 +276,13 @@ def apply_structural_wind_loads_to_group(
     exposure_axis: str = "y",
     extra_exposure_y_default: float = 0.0,
     extra_exposure_y_by_id: Dict[int, float] | None = None,
+    dbg=None,
+    print_summary: bool = False,
 ) -> None:
     """
     Backwards-compatible wrapper: build the WS beam-load plan and send it
     to MIDAS in one call.
     """
-
     combined_plan = build_structural_wind_beam_load_plan_for_group(
         group_name=group_name,
         components_df=components_df,
@@ -292,16 +295,15 @@ def apply_structural_wind_loads_to_group(
         print(f"[apply_structural_wind_loads_to_group] No loads for {group_name}")
         return
 
-    # === DEBUG: summary, optional CSV + log ==========================
     summarize_plan(
         combined_plan,
         label=f"WS_{group_name}",
-        dump_csv_per_case=False,   # flip to True when you want CSVs
-        write_log=True,
+        sink=dbg,
+        print_summary=print_summary,
     )
-    # ================================================================
 
-    apply_beam_load_plan_to_midas(combined_plan)
+    apply_beam_load_plan_to_midas(combined_plan, debug=dbg, debug_label=f"WS_{group_name}")
+
 
 
 def build_structural_wind_plans_for_deck_groups(

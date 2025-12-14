@@ -1,4 +1,3 @@
-# core/wind_load/wind_pipeline.py
 from __future__ import annotations
 
 from typing import Any
@@ -15,11 +14,6 @@ from core.wind_load.substructure_wind_loads import build_substructure_wind_plans
 def get_midas_geometry() -> tuple[dict, dict]:
     """
     Safely fetch MIDAS model geometry.
-
-    Returns
-    -------
-    (elements_in_model, nodes_in_model)
-        Both are dicts. If MIDAS is unavailable, returns ({}, {}).
     """
     try:
         from midas import elements as midas_elements, nodes as midas_nodes
@@ -29,13 +23,6 @@ def get_midas_geometry() -> tuple[dict, dict]:
 
 
 def get_structural_groups_df(wind_db: Any) -> pd.DataFrame:
-    """
-    Normalize wind_db.structural_groups into a DataFrame that contains:
-      - 'Group'
-      - 'Member Type' (defaulted to 'Deck' if missing)
-
-    Supports structural_groups being a dict[str, dict] or a pandas DataFrame.
-    """
     groups_raw = getattr(wind_db, "structural_groups", None)
     if groups_raw is None:
         raise ValueError("No structural groups found in wind database.")
@@ -65,9 +52,6 @@ def get_structural_groups_df(wind_db: Any) -> pd.DataFrame:
 
 
 def split_groups(groups_df: pd.DataFrame) -> tuple[list[str], list[str]]:
-    """
-    Split structural groups into (deck_groups, substructure_groups) based on 'Member Type'.
-    """
     deck = (
         groups_df.loc[groups_df["Member Type"] == "Deck", "Group"]
         .dropna()
@@ -89,19 +73,6 @@ def split_groups(groups_df: pd.DataFrame) -> tuple[list[str], list[str]]:
 
 
 def get_case_tables_and_ws_flag(wind_db: Any) -> tuple[pd.DataFrame, pd.DataFrame, bool]:
-    """
-    Returns
-    -------
-    (wl_df, ws_df, allow_ws)
-
-    wl_df:
-        wind_db.wl_cases if present, else empty DataFrame.
-    ws_df:
-        wind_db.ws_cases if present AND has columns {'Case','Angle','Value'}, else empty
-        DataFrame with those columns.
-    allow_ws:
-        True only if wind_db.wind_pressures exists and is a non-empty DataFrame.
-    """
     wl_df = getattr(wind_db, "wl_cases", None)
     if wl_df is None:
         wl_df = pd.DataFrame()
@@ -136,19 +107,9 @@ def build_all_wind_plans(
     dbg=None,
     allow_ws: bool,
 ) -> tuple[list[pd.DataFrame], dict]:
-    """
-    Build WL plans for deck groups and, if allow_ws is True, WS plans for deck + substructure.
-
-    Returns
-    -------
-    (all_plans, flags)
-      all_plans: list of DataFrames (each a beam load plan chunk)
-      flags: dict with keys {'wl','ws_deck','ws_sub'} indicating what was built
-    """
     flags = {"wl": False, "ws_deck": False, "ws_sub": False}
     all_plans: list[pd.DataFrame] = []
 
-    # --- WL (live wind) for deck groups ---
     wl_plans, flags["wl"] = build_wl_beam_load_plans_for_deck_groups(
         deck_groups=deck_groups,
         wind_live=wind_live,
@@ -160,7 +121,6 @@ def build_all_wind_plans(
     )
     all_plans.extend(wl_plans)
 
-    # --- WS (structural wind) for deck + substructure ---
     if allow_ws:
         ws_deck_plans, flags["ws_deck"] = build_structural_wind_plans_for_deck_groups(
             deck_groups=deck_groups,
@@ -195,9 +155,6 @@ def apply_plans_to_midas(
     dbg=None,
     debug_enabled: bool = False,
 ) -> None:
-    """
-    Concatenate all plan chunks, sort for stable application, optionally summarize, then apply to MIDAS.
-    """
     if not all_plans:
         return
 
@@ -209,8 +166,7 @@ def apply_plans_to_midas(
         summarize_plan(
             combined,
             label="ALL_WIND",
-            dump_csv_per_case=False,
-            write_log=True,
+            sink=dbg,
             print_summary=False,
         )
 
@@ -218,9 +174,6 @@ def apply_plans_to_midas(
 
 
 def status_message(flags: dict) -> str:
-    """
-    Human-friendly message describing which load types were applied.
-    """
     wl = flags.get("wl", False)
     ws = flags.get("ws_deck", False) or flags.get("ws_sub", False)
 

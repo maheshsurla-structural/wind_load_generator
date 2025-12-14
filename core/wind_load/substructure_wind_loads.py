@@ -16,9 +16,10 @@ from core.wind_load.beam_load import (
 )
 from core.wind_load.debug_utils import summarize_plan
 from core.wind_load.live_wind_loads import (
-    _extract_quadrant_from_name,
-    _apply_quadrant_signs,
+    _parse_quadrant_from_load_case_name,
+    _apply_quadrant_sign_convention,
 )
+
 
 from wind_database import wind_db
 
@@ -250,8 +251,9 @@ def build_substructure_wind_components_table(
 
         # --- Quadrant sign handling (reuse live_wind helpers) -----------
         # Interpret T ≡ local Y, L ≡ local Z for the sign logic.
-        q = _extract_quadrant_from_name(lcname)
-        y_signed, z_signed = _apply_quadrant_signs(q, base_y, base_z)
+        q = _parse_quadrant_from_load_case_name(lcname)
+        y_signed, z_signed = _apply_quadrant_sign_convention(q, base_y, base_z)
+
 
         rows.append(
             {
@@ -455,14 +457,9 @@ def apply_substructure_wind_loads_to_group(
     *,
     extra_exposure_y_default: float = 0.0,
     extra_exposure_y_by_id: Dict[int, float] | None = None,
+    dbg=None,
+    print_summary: bool = False,
 ) -> None:
-    """
-    Backwards-style wrapper for substructure WS:
-
-        - build the WS-substructure beam-load plan (LY + LZ)
-        - print a summary via summarize_plan
-        - send to MIDAS via apply_beam_load_plan_to_midas
-    """
     combined_plan = build_substructure_wind_beam_load_plan_for_group(
         group_name=group_name,
         components_df=components_df,
@@ -477,11 +474,12 @@ def apply_substructure_wind_loads_to_group(
     summarize_plan(
         combined_plan,
         label=f"WS_SUB_{group_name}",
-        dump_csv_per_case=False,   # flip to True if you want per-case CSVs
-        write_log=True,
+        sink=dbg,
+        print_summary=print_summary,
     )
 
-    apply_beam_load_plan_to_midas(combined_plan)
+    apply_beam_load_plan_to_midas(combined_plan, debug=dbg, debug_label=f"WS_SUB_{group_name}")
+
 
 
 
