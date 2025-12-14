@@ -1,20 +1,26 @@
+# core/wind_load/wind_pipeline.py
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable, Dict, Iterable, Tuple
 import pandas as pd
 
 from core.wind_load.debug_utils import summarize_plan
 from core.wind_load.beam_load import apply_beam_load_plan_to_midas
+from core.wind_load.plan_common import combine_plans
 
 from core.wind_load.live_wind_loads import build_wl_beam_load_plans_for_deck_groups
 from core.wind_load.structural_wind_loads import build_structural_wind_plans_for_deck_groups
 from core.wind_load.substructure_wind_loads import build_substructure_wind_plans_for_groups
 
+from core.wind_load.wind_common import normalize_and_validate_cases_df
+
+
+# ---------------------------------------------------------------------------
+# Geometry + group helpers
+# ---------------------------------------------------------------------------
 
 def get_midas_geometry() -> tuple[dict, dict]:
-    """
-    Safely fetch MIDAS model geometry.
-    """
+    """Safely fetch MIDAS model geometry."""
     try:
         from midas import elements as midas_elements, nodes as midas_nodes
         return (midas_elements.get() or {}), (midas_nodes.get() or {})
@@ -81,6 +87,7 @@ def get_case_tables_and_ws_flag(wind_db: Any) -> tuple[pd.DataFrame, pd.DataFram
     if raw_ws_df is None:
         raw_ws_df = pd.DataFrame()
 
+    # normalize schema: if not present, make empty with proper columns
     if {"Case", "Angle", "Value"}.issubset(raw_ws_df.columns):
         ws_df = raw_ws_df
     else:
@@ -90,6 +97,13 @@ def get_case_tables_and_ws_flag(wind_db: Any) -> tuple[pd.DataFrame, pd.DataFram
     allow_ws = isinstance(wind_pressures, pd.DataFrame) and (not wind_pressures.empty)
 
     return wl_df, ws_df, allow_ws
+
+
+# ---------------------------------------------------------------------------
+# Registry-based planner runner
+# ---------------------------------------------------------------------------
+
+PlanBuilder = Callable[[], tuple[list[pd.DataFrame], bool]]
 
 
 def build_all_wind_plans(
@@ -107,45 +121,81 @@ def build_all_wind_plans(
     dbg=None,
     allow_ws: bool,
 ) -> tuple[list[pd.DataFrame], dict]:
-    flags = {"wl": False, "ws_deck": False, "ws_sub": False}
+    """
+    Runs a registry of plan builders and merges results.
+
+    Returns:
+      (all_plans, flags)
+        flags = {"wl": bool, "ws_deck": bool, "ws_sub": bool}
+    """
+    flags: dict[str, bool] = {"wl": False, "ws_deck": False, "ws_sub": False}
     all_plans: list[pd.DataFrame] = []
 
-    wl_plans, flags["wl"] = build_wl_beam_load_plans_for_deck_groups(
-        deck_groups=deck_groups,
-        wind_live=wind_live,
-        wl_cases_df=wl_df,
-        group_members=group_members,
-        elements_in_model=elements_in_model,
-        nodes_in_model=nodes_in_model,
-        dbg=dbg,
-    )
-    all_plans.extend(wl_plans)
+    # normalize case tables once (centralized)
+    if wl_df is None:
+        wl_df = pd.DataFrame()
+    if ws_df is None:
+        ws_df = pd.DataFrame(columns=["Case", "Angle", "Value"])
 
-    if allow_ws:
-        ws_deck_plans, flags["ws_deck"] = build_structural_wind_plans_for_deck_groups(
-            deck_groups=deck_groups,
-            skew=skew,
-            ws_cases_df=ws_df,
-            wind_pressures_df=wind_pressures_df,
-            group_members=group_members,
-            elements_in_model=elements_in_model,
-            nodes_in_model=nodes_in_model,
-            dbg=dbg,
-        )
-        all_plans.extend(ws_deck_plans)
+    # If ws_df has data, validate now so errors are not “per group”
+    if not ws_df.empty:
+        ws_df = normalize_and_validate_cases_df(ws_df, df_name="ws_cases_df")
 
-        ws_sub_plans, flags["ws_sub"] = build_substructure_wind_plans_for_groups(
-            sub_groups=sub_groups,
-            ws_cases_df=ws_df,
-            wind_pressures_df=wind_pressures_df,
-            group_members=group_members,
-            elements_in_model=elements_in_model,
-            nodes_in_model=nodes_in_model,
-            dbg=dbg,
-            extra_exposure_y_default=0.0,
-            extra_exposure_y_by_id=None,
-        )
-        all_plans.extend(ws_sub_plans)
+    planners: list[tuple[str, bool, PlanBuilder]] = [
+        (
+            "wl",
+            True,
+            lambda: build_wl_beam_load_plans_for_deck_groups(
+                deck_groups=deck_groups,
+                wind_live=wind_live,
+                wl_cases_df=wl_df,
+                group_members=group_members,
+                elements_in_model=elements_in_model,
+                nodes_in_model=nodes_in_model,
+                dbg=dbg,
+            ),
+        ),
+        (
+            "ws_deck",
+            bool(allow_ws),
+            lambda: build_structural_wind_plans_for_deck_groups(
+                deck_groups=deck_groups,
+                skew=skew,
+                ws_cases_df=ws_df,
+                wind_pressures_df=wind_pressures_df,
+                group_members=group_members,
+                elements_in_model=elements_in_model,
+                nodes_in_model=nodes_in_model,
+                dbg=dbg,
+            ),
+        ),
+        (
+            "ws_sub",
+            bool(allow_ws),
+            lambda: build_substructure_wind_plans_for_groups(
+                sub_groups=sub_groups,
+                ws_cases_df=ws_df,
+                wind_pressures_df=wind_pressures_df,
+                group_members=group_members,
+                elements_in_model=elements_in_model,
+                nodes_in_model=nodes_in_model,
+                dbg=dbg,
+                extra_exposure_y_default=0.0,
+                extra_exposure_y_by_id=None,
+            ),
+        ),
+    ]
+
+    for key, enabled, fn in planners:
+        if not enabled:
+            flags[key] = False
+            continue
+
+        plans, any_applied = fn()
+        flags[key] = bool(any_applied)
+
+        if plans:
+            all_plans.extend(plans)
 
     return all_plans, flags
 
@@ -158,9 +208,9 @@ def apply_plans_to_midas(
     if not all_plans:
         return
 
-    combined = pd.concat(all_plans, ignore_index=True)
-    combined.sort_values(["load_case", "element_id"], inplace=True)
-    combined.reset_index(drop=True, inplace=True)
+    combined = combine_plans(all_plans)
+    if combined is None or combined.empty:
+        return
 
     if debug_enabled:
         summarize_plan(
@@ -174,8 +224,8 @@ def apply_plans_to_midas(
 
 
 def status_message(flags: dict) -> str:
-    wl = flags.get("wl", False)
-    ws = flags.get("ws_deck", False) or flags.get("ws_sub", False)
+    wl = bool(flags.get("wl", False))
+    ws = bool(flags.get("ws_deck", False)) or bool(flags.get("ws_sub", False))
 
     if wl and ws:
         return "WL applied to deck groups; WS applied to deck and/or substructure groups."

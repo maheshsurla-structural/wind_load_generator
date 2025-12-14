@@ -3,31 +3,32 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, Mapping, Tuple, List
 import math
+from functools import lru_cache
 
+import numpy as np
 import pandas as pd
-
-from core.wind_load.group_cache import get_group_element_ids
-from core.wind_load.compute_section_exposures import compute_section_exposures
-from core.wind_load.beam_load import (
-    build_uniform_pressure_beam_load_plan_from_depths,
-    _get_element_to_section_map,
-    apply_beam_load_plan_to_midas,
-    get_section_properties_cached,
-)
-from core.wind_load.debug_utils import summarize_plan
-from core.wind_load.live_wind_loads import (
-    _parse_quadrant_from_load_case_name,
-    _apply_quadrant_sign_convention,
-)
-
 
 from wind_database import wind_db
 
-import numpy as np
-from functools import lru_cache
+from core.wind_load.debug_utils import summarize_plan
+from core.wind_load.beam_load import apply_beam_load_plan_to_midas
+from core.wind_load.group_cache import get_group_element_ids
 
 from core.geometry.midas_element_local_axes import MidasElementLocalAxes
 from core.geometry.element_local_axes import LocalAxes
+
+from core.wind_load.wind_common import (
+    parse_quadrant_from_load_case_name,
+    apply_quadrant_sign_convention,
+    normalize_and_validate_cases_df,
+)
+
+from core.wind_load.plan_common import (
+    resolve_element_ids,
+    build_pressure_plan_from_components,
+)
+from core.wind_load.group_runner import build_plans_for_groups
+
 
 # ---------------------------------------------------------------------------
 # Pier-frame orientation helpers
@@ -35,10 +36,8 @@ from core.geometry.element_local_axes import LocalAxes
 
 _axes_helper: MidasElementLocalAxes | None = None
 
+
 def _get_axes_helper() -> MidasElementLocalAxes:
-    """
-    Lazy singleton for MidasElementLocalAxes so we don't keep hitting MIDAS.
-    """
     global _axes_helper
     if _axes_helper is None:
         _axes_helper = MidasElementLocalAxes.from_midas()
@@ -47,20 +46,11 @@ def _get_axes_helper() -> MidasElementLocalAxes:
 
 @lru_cache(maxsize=128)
 def _get_group_local_axes(group_name: str) -> LocalAxes:
-    """
-    Return a representative LocalAxes for the given structural group.
-
-    We just pick the first element in the group as the direction reference.
-    Uses cached group → element IDs.
-    """
     helper = _get_axes_helper()
     element_ids = get_group_element_ids(group_name)
     if not element_ids:
         raise RuntimeError(f"Group {group_name!r} has no elements in MIDAS.")
-
-    elem_id = element_ids[0]  # already int
-    return helper.compute_local_axes_for_element(elem_id)
-
+    return helper.compute_local_axes_for_element(int(element_ids[0]))
 
 
 def _signed_angle_about_axis(
@@ -70,12 +60,6 @@ def _signed_angle_about_axis(
     *,
     tol: float = 1e-9,
 ) -> float:
-    """
-    Signed angle (deg) from v_from -> v_to about 'axis' using the right-hand rule.
-
-    Both v_from and v_to are projected onto the plane perpendicular to 'axis'
-    before computing the angle.
-    """
     axis = np.asarray(axis, dtype=float)
     v_from = np.asarray(v_from, dtype=float)
     v_to = np.asarray(v_to, dtype=float)
@@ -110,19 +94,11 @@ def _get_angle_offset_from_pier(group_name: str) -> float:
 
     try:
         pier_axes = _get_group_local_axes(pier_group)
-        grp_axes  = _get_group_local_axes(group_name)
+        grp_axes = _get_group_local_axes(group_name)
     except RuntimeError:
-        # No elements in one of the groups – no reliable orientation
         return 0.0
 
-    delta = _signed_angle_about_axis(
-        pier_axes.ey,
-        grp_axes.ey,
-        pier_axes.ex,
-    )
-    return delta
-
-
+    return _signed_angle_about_axis(pier_axes.ey, grp_axes.ey, pier_axes.ex)
 
 
 # ---------------------------------------------------------------------------
@@ -135,52 +111,17 @@ def build_substructure_wind_components_table(
     ws_cases_df: pd.DataFrame,
     wind_pressures_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """
-    For each WS-substructure row and angle, build signed local-Y/local-Z
-    *pressures* starting from:
+    cols_out = [
+        "load_case",
+        "load_group",
+        "angle",
+        "design_angle",
+        "base_case",
+        "P",
+        "p_local_y",
+        "p_local_z",
+    ]
 
-        P (ksf)  ← from wind_pressures table for (Group, Case)
-        θ        ← from ws_cases_df['Angle'], in degrees, measured from local +Y
-        Q1..Q4   ← inferred from load_case name (same logic as live wind)
-
-    INPUT TABLES
-    ------------
-
-    ws_cases_df columns (same style as your WS deck table):
-        Case   : base load case name (e.g. 'Strength III')
-        Angle  : wind direction angle (deg from local +Y toward +Z)
-        Value  : final MIDAS load case name, e.g. 'WS_Pier_Q2_A15'
-
-    wind_pressures_df columns (same as deck structural wind):
-        Group
-        Load Case
-        Pz (ksf)   ← here treated as the horizontal pressure magnitude P
-
-    RETURNS
-    -------
-    pandas.DataFrame with columns:
-
-        load_case   : final MIDAS load case name (Value)
-        load_group  : same as load_case (for convenience)
-        angle       : angle in degrees (as provided)
-        base_case   : wind base case name (Case)
-        P           : pressure magnitude (ksf)
-        p_local_y   : signed pressure component in local +Y (ksf)
-        p_local_z   : signed pressure component in local +Z (ksf)
-
-    SIGN / ANGLE CONVENTION
-    -----------------------
-    - θ = 0°   → load fully in local +Y (p_local_y = +P, p_local_z = 0)
-    - θ = 90°  → load fully in local +Z (p_local_y = 0,  p_local_z = +P)
-    - intermediate angles use cos/sin components.
-
-    After that, quadrant Q1..Q4 is applied via `_apply_quadrant_signs`,
-    where we interpret:
-
-        T ≡ local Y,  L ≡ local Z
-
-    so the wind case name can flip signs consistently with live wind loads.
-    """
     if wind_pressures_df is None:
         wind_pressures_df = wind_db.wind_pressures
 
@@ -190,85 +131,67 @@ def build_substructure_wind_components_table(
         or ws_cases_df is None
         or ws_cases_df.empty
     ):
-        return pd.DataFrame(
-            columns=[
-                "load_case",
-                "load_group",
-                "angle",
-                "design_angle",  
-                "base_case",
-                "P",
-                "p_local_y",
-                "p_local_z",
-            ]
-        )
+        return pd.DataFrame(columns=cols_out)
 
+    group_name = str(group_name or "").strip()
+    if not group_name:
+        return pd.DataFrame(columns=cols_out)
 
-    needed_ws = {"Case", "Angle", "Value"}
-    if missing := needed_ws - set(ws_cases_df.columns):
-        raise ValueError(f"ws_cases_df missing columns: {missing}")
+    ws_cases_df = normalize_and_validate_cases_df(ws_cases_df, df_name="ws_cases_df")
 
     needed_p = {"Group", "Load Case", "Pz (ksf)"}
     if missing := needed_p - set(wind_pressures_df.columns):
         raise ValueError(f"wind_pressures_df missing columns: {missing}")
 
-    rows: list[dict] = []
+    # Pre-filter pressures for this group
+    pz = wind_pressures_df.loc[
+        wind_pressures_df["Group"] == group_name,
+        ["Load Case", "Pz (ksf)"],
+    ].copy()
+    pz.rename(columns={"Load Case": "base_case", "Pz (ksf)": "P"}, inplace=True)
+    pz = pz.drop_duplicates(subset=["base_case"], keep="first")
+    p_by_base = {str(r["base_case"]).strip(): float(r["P"]) for _, r in pz.iterrows()}
+
+    if not p_by_base:
+        return pd.DataFrame(columns=cols_out)
+
     delta = _get_angle_offset_from_pier(group_name)
-    for _, ws_row in ws_cases_df.iterrows():
-        base_case = str(ws_row["Case"] or "").strip()
-        lcname = str(ws_row["Value"] or "").strip()
-        if not lcname or not base_case:
+
+    rows: list[dict] = []
+    for _, r in ws_cases_df.iterrows():
+        base_case = str(r["Case"]).strip()
+        lcname = str(r["Value"]).strip()
+        if not base_case or not lcname:
             continue
 
-        try:
-            ang_design = float(ws_row["Angle"])
-        except (TypeError, ValueError):
-            continue
-
-        # --- NEW: adjust angle by pier-frame offset --------------------
-        # θ_design is defined relative to the pier Y.
-        # For this group's local (Y,Z), use:
-        #   θ_eff = θ_design - δ
-        # where δ is angle from pier Y -> group Y.
+        ang_design = float(r["Angle"])
         ang_eff = ang_design - delta
         theta = math.radians(ang_eff)
 
-        # Pressure magnitude for this (group, base_case)
-        mask = (
-            (wind_pressures_df["Group"] == group_name)
-            & (wind_pressures_df["Load Case"] == base_case)
-        )
-        sub = wind_pressures_df[mask]
-        if sub.empty:
+        P = p_by_base.get(base_case)
+        if P is None:
             continue
 
-        P = float(sub.iloc[0]["Pz (ksf)"])
-
-        # 0° in this group's LOCAL frame is its own +Y.
         base_y = P * math.cos(theta)
         base_z = P * math.sin(theta)
 
-
-        # --- Quadrant sign handling (reuse live_wind helpers) -----------
-        # Interpret T ≡ local Y, L ≡ local Z for the sign logic.
-        q = _parse_quadrant_from_load_case_name(lcname)
-        y_signed, z_signed = _apply_quadrant_sign_convention(q, base_y, base_z)
-
+        q = parse_quadrant_from_load_case_name(lcname)
+        y_signed, z_signed = apply_quadrant_sign_convention(q, base_y, base_z)
 
         rows.append(
             {
                 "load_case": lcname,
                 "load_group": lcname,
-                "angle": ang_eff,
-                "design_angle": ang_design,
+                "angle": float(ang_eff),
+                "design_angle": float(ang_design),
                 "base_case": base_case,
-                "P": P,
-                "p_local_y": y_signed,
-                "p_local_z": z_signed,
+                "P": float(P),
+                "p_local_y": float(y_signed),
+                "p_local_z": float(z_signed),
             }
         )
 
-    out = pd.DataFrame(rows)
+    out = pd.DataFrame(rows, columns=cols_out)
     if not out.empty:
         out.sort_values(["angle", "load_case"], inplace=True)
         out.reset_index(drop=True, inplace=True)
@@ -276,7 +199,7 @@ def build_substructure_wind_components_table(
 
 
 # ---------------------------------------------------------------------------
-# 2) Build substructure WS beam-load plan (LY + LZ)
+# 2) Build substructure WS beam-load plan (LY + LZ) using shared builder
 # ---------------------------------------------------------------------------
 
 def build_substructure_wind_beam_load_plan_for_group(
@@ -285,170 +208,32 @@ def build_substructure_wind_beam_load_plan_for_group(
     *,
     extra_exposure_y_default: float = 0.0,
     extra_exposure_y_by_id: Dict[int, float] | None = None,
-
-    # NEW: optional pre-resolved element IDs + geometry cache
     element_ids: list[int] | None = None,
-    elements_in_model=None,   # not used here, but accepted
-    nodes_in_model=None,      # for API compatibility with caller
+    elements_in_model=None,
+    nodes_in_model=None,
 ) -> pd.DataFrame:
-
-    """
-    Build a combined beam-load plan (LY + LZ) for substructure wind on a
-    structural group.
-
-    PARAMETERS
-    ----------
-    group_name : str
-        Name of the MIDAS structural group containing the substructure elements
-        (e.g., 'Pier_1').
-    components_df : pd.DataFrame
-        Expected to come from build_substructure_wind_components_table and
-        must contain at least:
-
-            load_case
-            load_group
-            p_local_y   (ksf, signed)
-            p_local_z   (ksf, signed)
-
-    extra_exposure_y_default : float
-        Global additional exposure in local Y to add (ft).
-    extra_exposure_y_by_id : dict[int, float] | None
-        Optional {property_id: extra_exposure_y} overrides for Y.
-
-    LOGIC
-    -----
-    For each load case:
-
-        q_LY = p_local_y * exposure_y  (k/ft)
-        q_LZ = p_local_z * exposure_z  (k/ft)
-
-    where:
-
-        exposure_y = top + bottom + extra_y
-        exposure_z = left + right
-
-    from compute_section_exposures(). The line loads are applied as:
-
-        LY for the Y component
-        LZ for the Z component
-    """
     if components_df is None or components_df.empty:
-        print(f"[build_substructure_wind_beam_load_plan_for_group] No loads for {group_name}")
         return pd.DataFrame()
 
-    # ---- Resolve elements in the group --------------------------------
-    if element_ids is None:
-        element_ids = get_group_element_ids(group_name)
-    else:
-        element_ids = [int(e) for e in element_ids]
-
-
-
-    if not element_ids:
-        print(
-            "[build_substructure_wind_beam_load_plan_for_group] "
-            f"Group {group_name} has no elements"
-        )
+    eids = resolve_element_ids(group_name, element_ids)
+    if not eids:
         return pd.DataFrame()
 
-    # ---- Map element -> section/property ID ---------------------------
-    elem_to_sect = _get_element_to_section_map(element_ids)
-    if not elem_to_sect:
-        print(
-            "[build_substructure_wind_beam_load_plan_for_group] "
-            f"No section mapping for group {group_name}"
-        )
-        return pd.DataFrame()
-
-    # ---- Compute exposures (Y and Z) from section properties ----------
-    section_props_raw = get_section_properties_cached()
-    exposures_df = compute_section_exposures(
-        section_props_raw,
+    return build_pressure_plan_from_components(
+        group_name=group_name,
+        components_df=components_df,
+        component_map={
+            "p_local_y": ("LY", "y"),
+            "p_local_z": ("LZ", "z"),
+        },
+        element_ids=eids,
         extra_exposure_y_default=extra_exposure_y_default,
         extra_exposure_y_by_id=extra_exposure_y_by_id,
-        as_dataframe=True,
     )
 
 
-    try:
-        exposures_df.index = exposures_df.index.astype(int)
-    except ValueError:
-        pass
-
-    if exposures_df.empty:
-        print(
-            "[build_substructure_wind_beam_load_plan_for_group] "
-            f"Exposure table is empty for group {group_name}"
-        )
-        return pd.DataFrame()
-
-    # Build depth maps for local Y and Z separately
-    depth_y_by_eid: Dict[int, float] = {}
-    depth_z_by_eid: Dict[int, float] = {}
-
-    for eid, sect_id in elem_to_sect.items():
-        if sect_id in exposures_df.index:
-            depth_y_by_eid[int(eid)] = float(exposures_df.loc[sect_id, "exposure_y"])
-            depth_z_by_eid[int(eid)] = float(exposures_df.loc[sect_id, "exposure_z"])
-
-    if not depth_y_by_eid and not depth_z_by_eid:
-        print(
-            "[build_substructure_wind_beam_load_plan_for_group] "
-            f"No exposure depths for group {group_name}"
-        )
-        return pd.DataFrame()
-
-    # ---- Build per-case plans in memory -------------------------------
-    plans: list[pd.DataFrame] = []
-
-    for _, row in components_df.iterrows():
-        lcname = str(row["load_case"])
-        lgname = str(row.get("load_group") or lcname)
-
-        p_y = float(row.get("p_local_y", 0.0))
-        p_z = float(row.get("p_local_z", 0.0))
-
-        # Local Y component → LY
-        if abs(p_y) > 1e-9 and depth_y_by_eid:
-            plan_y = build_uniform_pressure_beam_load_plan_from_depths(
-                group_name=group_name,
-                load_case_name=lcname,
-                pressure=p_y,
-                udl_direction="LY",
-                depth_by_eid=depth_y_by_eid,
-                load_group_name=lgname,
-            )
-            if not plan_y.empty:
-                plans.append(plan_y)
-
-        # Local Z component → LZ
-        if abs(p_z) > 1e-9 and depth_z_by_eid:
-            plan_z = build_uniform_pressure_beam_load_plan_from_depths(
-                group_name=group_name,
-                load_case_name=lcname,
-                pressure=p_z,
-                udl_direction="LZ",
-                depth_by_eid=depth_z_by_eid,
-                load_group_name=lgname,
-            )
-            if not plan_z.empty:
-                plans.append(plan_z)
-
-    if not plans:
-        print(
-            "[build_substructure_wind_beam_load_plan_for_group] "
-            f"All substructure WS line loads ~ 0 for group {group_name}"
-        )
-        return pd.DataFrame()
-
-    combined_plan = pd.concat(plans, ignore_index=True)
-    combined_plan.sort_values(["load_case", "element_id"], inplace=True)
-    combined_plan.reset_index(drop=True, inplace=True)
-    return combined_plan
-
-
 # ---------------------------------------------------------------------------
-# 3) Apply wrapper: build + summarize + send to MIDAS
+# 3) Apply wrapper
 # ---------------------------------------------------------------------------
 
 def apply_substructure_wind_loads_to_group(
@@ -471,18 +256,13 @@ def apply_substructure_wind_loads_to_group(
         print(f"[apply_substructure_wind_loads_to_group] No loads for {group_name}")
         return
 
-    summarize_plan(
-        combined_plan,
-        label=f"WS_SUB_{group_name}",
-        sink=dbg,
-        print_summary=print_summary,
-    )
-
+    summarize_plan(combined_plan, label=f"WS_SUB_{group_name}", sink=dbg, print_summary=print_summary)
     apply_beam_load_plan_to_midas(combined_plan, debug=dbg, debug_label=f"WS_SUB_{group_name}")
 
 
-
-
+# ---------------------------------------------------------------------------
+# 4) Build plans for multiple substructure groups
+# ---------------------------------------------------------------------------
 
 def build_substructure_wind_plans_for_groups(
     *,
@@ -492,67 +272,47 @@ def build_substructure_wind_plans_for_groups(
     group_members: Mapping[str, list[int]] | None = None,
     elements_in_model: dict | None = None,
     nodes_in_model: dict | None = None,
-    dbg=None,  # DebugSink-like
+    dbg=None,
     extra_exposure_y_default: float = 0.0,
     extra_exposure_y_by_id=None,
 ) -> Tuple[List[pd.DataFrame], bool]:
-    """
-    Build STRUCTURAL wind (WS) plans for SUBSTRUCTURE groups.
-
-    Mirrors the old MainWindow section:
-      - build_substructure_wind_components_table(...)
-      - build_substructure_wind_beam_load_plan_for_group(...)
-      - append plan(s)
-
-    Returns: (plans, ws_sub_any)
-    """
-    elements_in_model = elements_in_model or {}
-    nodes_in_model = nodes_in_model or {}
-    group_members = group_members or {}
-
     if ws_cases_df is None or ws_cases_df.empty:
         return [], False
 
-    needed = {"Case", "Angle", "Value"}
-    if missing := needed - set(ws_cases_df.columns):
-        raise ValueError(f"ws_cases_df missing columns: {missing}")
+    ws_cases_df = normalize_and_validate_cases_df(ws_cases_df, df_name="ws_cases_df")
 
-    plans: list[pd.DataFrame] = []
-    ws_sub_any = False
-
-    for group_name in sub_groups:
-        group_name = str(group_name).strip()
-        if not group_name:
-            continue
-
-        cached_ids = group_members.get(group_name)
-        element_ids_for_plan = cached_ids if cached_ids else None
-
-        sub_components = build_substructure_wind_components_table(
-            group_name=group_name,
+    def _components_for_group(g: str) -> pd.DataFrame:
+        return build_substructure_wind_components_table(
+            group_name=g,
             ws_cases_df=ws_cases_df,
             wind_pressures_df=wind_pressures_df,
         )
 
-        if sub_components is None or sub_components.empty:
-            print(f"[WS_SUB] No components for substructure group '{group_name}'.")
-            continue
-
-        plan_ws = build_substructure_wind_beam_load_plan_for_group(
-            group_name=group_name,
-            components_df=sub_components,
+    def _plan_for_group(g: str, comp: pd.DataFrame, eids: list[int] | None) -> pd.DataFrame:
+        return build_substructure_wind_beam_load_plan_for_group(
+            group_name=g,
+            components_df=comp,
             extra_exposure_y_default=extra_exposure_y_default,
             extra_exposure_y_by_id=extra_exposure_y_by_id,
-            element_ids=element_ids_for_plan,
+            element_ids=eids,
             elements_in_model=elements_in_model,
             nodes_in_model=nodes_in_model,
         )
 
-        if plan_ws is not None and not plan_ws.empty:
-            if dbg is not None and getattr(dbg, "enabled", False):
-                dbg.dump_plan(plan_ws, label=f"WS_SUB_{group_name}", split_per_case=True)
+    return build_plans_for_groups(
+        groups=sub_groups,
+        group_members=group_members,
+        dbg=dbg,
+        label_prefix="WS_SUB_",
+        dump_components=True,
+        build_components_for_group=_components_for_group,
+        build_plan_for_group=_plan_for_group,
+    )
 
-            plans.append(plan_ws)
-            ws_sub_any = True
 
-    return plans, ws_sub_any
+__all__ = [
+    "build_substructure_wind_components_table",
+    "build_substructure_wind_beam_load_plan_for_group",
+    "apply_substructure_wind_loads_to_group",
+    "build_substructure_wind_plans_for_groups",
+]
