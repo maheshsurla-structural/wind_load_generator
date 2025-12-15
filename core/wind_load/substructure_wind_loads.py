@@ -12,7 +12,7 @@ from wind_database import wind_db
 
 from core.wind_load.debug import summarize_plan
 from core.wind_load.beam_load import apply_beam_load_plan_to_midas
-from core.wind_load.group_cache import get_group_element_ids
+from core.wind_load.groups import get_group_element_ids, build_plans_for_groups
 
 from core.geometry.midas_element_local_axes import MidasElementLocalAxes
 from core.geometry.element_local_axes import LocalAxes
@@ -27,7 +27,6 @@ from core.wind_load.plan_common import (
     resolve_element_ids,
     build_pressure_plan_from_components,
 )
-from core.wind_load.group_runner import build_plans_for_groups
 
 
 # ---------------------------------------------------------------------------

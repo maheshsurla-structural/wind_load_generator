@@ -19,7 +19,7 @@ from core.wind_load.plan_common import (
     resolve_element_ids,
     build_line_load_plan_from_components,
 )
-from core.wind_load.group_runner import build_plans_for_groups
+from core.wind_load.groups import build_plans_for_groups
 
 
 # ---------------------------------------------------------------------------

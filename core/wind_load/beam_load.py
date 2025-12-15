@@ -7,7 +7,7 @@ from functools import lru_cache
 from midas.resources.element_beam_load import BeamLoadItem, BeamLoadResource
 from midas import elements, get_section_properties
 from core.wind_load.debug import DebugSink
-from core.wind_load.group_cache import get_group_element_ids
+from core.wind_load.groups import get_group_element_ids
 
 @lru_cache(maxsize=1)
 def _get_all_elements_cached() -> dict:
@@ -236,7 +236,7 @@ def apply_beam_load_plan_to_midas(
     plan_df: pd.DataFrame,
     *,
     start_id: int | None = None,
-    chunk_size: int = 4000,
+    chunk_size: int = 5000,
     debug: DebugSink | None = None,
     debug_label: str = "ALL_WIND",
 ) -> pd.DataFrame:

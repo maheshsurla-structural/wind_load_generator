@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Dict, Mapping, Tuple
 import pandas as pd
 
-from core.wind_load.group_cache import get_group_element_ids
+from core.wind_load.groups import get_group_element_ids
 from core.wind_load.beam_load import (
     build_uniform_load_beam_load_plan_for_group,
     build_uniform_pressure_beam_load_plan_from_depths,
