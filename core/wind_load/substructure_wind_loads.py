@@ -21,9 +21,6 @@ from core.wind_load.wind_common import (
     parse_quadrant_from_load_case_name,
     apply_quadrant_sign_convention,
     normalize_and_validate_cases_df,
-)
-
-from core.wind_load.plan_common import (
     resolve_element_ids,
     build_pressure_plan_from_components,
 )

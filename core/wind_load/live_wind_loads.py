@@ -13,12 +13,10 @@ from core.wind_load.wind_common import (
     apply_quadrant_sign_convention,
     normalize_and_validate_cases_df,
     coeffs_by_angle,
-)
-
-from core.wind_load.plan_common import (
     resolve_element_ids,
     build_line_load_plan_from_components,
 )
+
 from core.wind_load.groups import build_plans_for_groups
 
 

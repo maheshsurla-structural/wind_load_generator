@@ -7,13 +7,12 @@ import pandas as pd
 
 from core.wind_load.debug import summarize_plan
 from core.wind_load.beam_load import apply_beam_load_plan_to_midas
-from core.wind_load.plan_common import combine_plans
 
 from core.wind_load.live_wind_loads import build_wl_beam_load_plans_for_deck_groups
 from core.wind_load.structural_wind_loads import build_structural_wind_plans_for_deck_groups
 from core.wind_load.substructure_wind_loads import build_substructure_wind_plans_for_groups
 
-from core.wind_load.wind_common import normalize_and_validate_cases_df
+from core.wind_load.wind_common import normalize_and_validate_cases_df, combine_plans
 
 
 # ---------------------------------------------------------------------------
