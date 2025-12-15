@@ -1,13 +1,104 @@
 # core/wind_load/beam_load.py
-
 from __future__ import annotations
-from typing import Sequence, Dict, List, Any, Tuple
-import pandas as pd
+
 from functools import lru_cache
-from midas.resources.element_beam_load import BeamLoadItem, BeamLoadResource
+from typing import Sequence, Dict, List
+
+import numpy as np
+import pandas as pd
+
 from midas import elements, get_section_properties
+from midas.resources.element_beam_load import BeamLoadItem, BeamLoadResource
+
 from core.wind_load.debug import DebugSink
 from core.wind_load.groups import get_group_element_ids
+
+
+# =============================================================================
+# Section exposure helper (moved from compute_section_exposures.py)
+# =============================================================================
+
+def compute_section_exposures(
+    section_properties,
+    extra_exposure_y_default: float = 0.0,
+    extra_exposure_y_by_id: dict | None = None,
+    as_dataframe: bool = True,
+) -> pd.DataFrame | dict:
+    """
+    Compute local Y and Z exposure depths for all section properties.
+
+    Parameters
+    ----------
+    section_properties : list
+        List of section property data rows (e.g., from MIDAS export).
+    extra_exposure_y_default : float, optional
+        Default additional exposure to add in the local Y direction.
+    extra_exposure_y_by_id : dict, optional
+        Optional mapping {property_id: extra_exposure_y} for per-section overrides.
+    as_dataframe : bool, optional
+        If True, returns a pandas DataFrame indexed by property_id;
+        if False, returns a dictionary {property_id: (exposure_y, exposure_z)}.
+
+    Returns
+    -------
+    pandas.DataFrame | dict
+        Exposure data for all sections.
+    """
+    # Column indices in the MIDAS section property table
+    COL_ID, COL_LEFT, COL_RIGHT, COL_TOP, COL_BOTTOM = 1, 11, 12, 13, 14
+
+    property_ids, left_vals, right_vals, top_vals, bottom_vals = [], [], [], [], []
+
+    for row in section_properties:
+        if len(row) <= COL_BOTTOM:
+            continue
+        try:
+            property_ids.append(row[COL_ID])
+            left_vals.append(float(row[COL_LEFT]))
+            right_vals.append(float(row[COL_RIGHT]))
+            top_vals.append(float(row[COL_TOP]))
+            bottom_vals.append(float(row[COL_BOTTOM]))
+        except (TypeError, ValueError):
+            continue
+
+    if not property_ids:
+        return pd.DataFrame(columns=["exposure_y", "exposure_z"]) if as_dataframe else {}
+
+    # Convert to numpy arrays
+    property_ids = np.asarray(property_ids, dtype=object)
+    left_vals = np.asarray(left_vals, dtype=float)
+    right_vals = np.asarray(right_vals, dtype=float)
+    top_vals = np.asarray(top_vals, dtype=float)
+    bottom_vals = np.asarray(bottom_vals, dtype=float)
+
+    # Apply extra exposure (per-property or global)
+    if extra_exposure_y_by_id:
+        extra_y = np.fromiter(
+            (extra_exposure_y_by_id.get(pid, extra_exposure_y_default) for pid in property_ids),
+            dtype=float,
+            count=property_ids.size,
+        )
+    else:
+        extra_y = np.full(property_ids.size, extra_exposure_y_default, dtype=float)
+
+    # Compute exposures
+    exposure_y = top_vals + bottom_vals + extra_y
+    exposure_z = left_vals + right_vals
+
+    if as_dataframe:
+        df = pd.DataFrame(
+            {"exposure_y": exposure_y, "exposure_z": exposure_z},
+            index=property_ids,
+        )
+        df.index.name = "property_id"
+        return df
+
+    return {property_ids[i]: (exposure_y[i], exposure_z[i]) for i in range(property_ids.size)}
+
+
+# =============================================================================
+# Cached MIDAS reads
+# =============================================================================
 
 @lru_cache(maxsize=1)
 def _get_all_elements_cached() -> dict:
@@ -28,17 +119,15 @@ def get_section_properties_cached():
     return get_section_properties()
 
 
-# -------------------------------------------------
-# PROJECT HOOKS (you still need to implement these)
-# -------------------------------------------------
+# =============================================================================
+# Beam load ID + element->section helpers
+# =============================================================================
 
 def _get_next_beam_load_id() -> int:
     """
     Look at /db/bmld and return max(ITEM.ID) + 1.
     If there are no existing beam loads, return 1.
     """
-    # raw structure: { "115": {"ITEMS": [ {...}, {...} ]},
-    #                  "220": {"ITEMS": [ {...} ]}, ... }
     raw = BeamLoadResource.get_raw() or {}
 
     max_id = 0
@@ -54,24 +143,21 @@ def _get_next_beam_load_id() -> int:
 
     return max_id + 1 if max_id > 0 else 1
 
+
 def _get_element_to_section_map(element_ids: List[int]) -> Dict[int, int]:
     """
     Return {element_id: section_id} for each element in element_ids.
-
-    Uses /db/ELEM via midas.elements.get_all().
-    Each element dict must contain the key "SECT" (or equivalent)
-    referring to its assigned section/property ID.
-    Elements missing that key are skipped.
+    Uses /db/ELEM via midas.elements.get_all() (cached).
     """
     out: Dict[int, int] = {}
-    all_elem_data = _get_all_elements_cached()  # ← cached /db/ELEM
+    all_elem_data = _get_all_elements_cached()
 
     for eid in element_ids:
         edata = all_elem_data.get(str(eid))
         if not edata:
             continue
 
-        sect_id = edata.get("SECT")  # <-- adjust key name if different in your model
+        sect_id = edata.get("SECT")  # adjust if your key differs
         if sect_id is None:
             continue
 
@@ -83,9 +169,9 @@ def _get_element_to_section_map(element_ids: List[int]) -> Dict[int, int]:
     return out
 
 
-# -------------------------------------------------
-# STEP 1: Build the per-element wind load plan
-# -------------------------------------------------
+# =============================================================================
+# STEP 1: Build plan DataFrames (no MIDAS write)
+# =============================================================================
 
 def build_uniform_pressure_beam_load_plan_from_depths(
     *,
@@ -97,15 +183,9 @@ def build_uniform_pressure_beam_load_plan_from_depths(
     load_group_name: str | None = None,
 ) -> pd.DataFrame:
     """
-    Low-level helper: given
-        - pressure (ksf)
-        - precomputed exposure depth per element (ft)
-    build a beam-load plan DataFrame.
-
-    This function does NOT talk to MIDAS. It just does:
-        q = pressure * depth_by_eid[eid]
+    Given pressure (ksf) and per-element exposure depth (ft),
+    produce a plan with line_load = pressure * depth (k/ft).
     """
-
     rows: list[dict] = []
 
     for eid, depth in depth_by_eid.items():
@@ -146,8 +226,6 @@ def build_uniform_pressure_beam_load_plan_for_group(
     High-level helper: resolve elements, sections, exposures from MIDAS
     then call build_uniform_pressure_beam_load_plan_from_depths().
     """
-    from core.wind_load.compute_section_exposures import compute_section_exposures
-
     element_ids = get_group_element_ids(group_name)
     elem_to_sect = _get_element_to_section_map(element_ids)
 
@@ -181,10 +259,6 @@ def build_uniform_pressure_beam_load_plan_for_group(
     )
 
 
-# -------------------------------------------------
-# LINE LOAD plan (kips/ft directly)
-# -------------------------------------------------
-
 def build_uniform_load_beam_load_plan_for_group(
     *,
     group_name: str,
@@ -193,10 +267,11 @@ def build_uniform_load_beam_load_plan_for_group(
     udl_direction: str,
     load_group_name: str | None = None,
     element_ids: Sequence[int] | None = None,
-    eccentricity: float = 0.0,           # ← NEW (ft, same units as model)
+    eccentricity: float = 0.0,
 ) -> pd.DataFrame:
-
-    # 1) Resolve elements for this group
+    """
+    Build a plan where line_load is already k/ft for all elements.
+    """
     if element_ids is None:
         element_ids = get_group_element_ids(group_name)
 
@@ -212,7 +287,7 @@ def build_uniform_load_beam_load_plan_for_group(
                 "load_direction": udl_direction,
                 "load_group": load_group_name or load_case_name,
                 "group_name": group_name,
-                "eccentricity": float(eccentricity),   # ← NEW
+                "eccentricity": float(eccentricity),
             }
         )
 
@@ -223,14 +298,9 @@ def build_uniform_load_beam_load_plan_for_group(
     return plan_df
 
 
-
-# -------------------------------------------------
-# STEP 2: Take that plan and actually PUT beam loads to MIDAS
-# -------------------------------------------------
-
-# -------------------------------------------------
-# APPLY any beam-load plan to MIDAS
-# -------------------------------------------------
+# =============================================================================
+# STEP 2: Apply plan to MIDAS
+# =============================================================================
 
 def apply_beam_load_plan_to_midas(
     plan_df: pd.DataFrame,
@@ -241,31 +311,26 @@ def apply_beam_load_plan_to_midas(
     debug_label: str = "ALL_WIND",
 ) -> pd.DataFrame:
     """
-    Take a plan DataFrame with columns
-        ['element_id', 'line_load', 'load_case', 'load_direction', 'load_group']
+    Take a plan DataFrame with columns:
+      ['element_id', 'line_load', 'load_case', 'load_direction', 'load_group']
     and send them as BeamLoadItem specs to MIDAS.
 
     IMPORTANT:
-        - Chunking is done **between load cases only**.
-        - A single load_case will never be split across two requests, even if
-          that means temporarily exceeding `chunk_size` for that one request.
+      - Chunking is done **between load cases only**.
+      - A single load_case is never split across two requests.
     """
-
     if plan_df is None or plan_df.empty:
         print("[apply_beam_load_plan_to_midas] plan_df is empty; nothing to send.")
         return plan_df
 
-    # Decide where to start IDs
     if start_id is None:
         start_id = _get_next_beam_load_id()
 
-    # Sort so grouping is deterministic
     plan_df = plan_df.sort_values(
         ["load_case", "load_direction", "element_id"],
         kind="stable",
     ).reset_index(drop=True)
 
-    # Dump final plan once (optional)
     if debug and debug.enabled:
         debug.dump_plan(plan_df, label=debug_label, split_per_case=True)
 
@@ -279,18 +344,14 @@ def apply_beam_load_plan_to_midas(
     next_id = start_id
     sent = 0
     chunk_index = 0
-
-    # Current chunk of specs we are building up (may contain several load cases)
     current_specs: list[tuple[int, BeamLoadItem]] = []
 
     def _send_specs(specs: list[tuple[int, BeamLoadItem]], *, reason: str = "") -> None:
-        """Single place that dumps + sends + counts."""
         nonlocal sent, chunk_index
         if not specs:
             return
 
         chunk_index += 1
-
         print(
             f"[apply_beam_load_plan_to_midas] "
             f"Sending chunk of {len(specs)} specs to MIDAS..."
@@ -308,7 +369,6 @@ def apply_beam_load_plan_to_midas(
         BeamLoadResource.create_from_specs(specs)
         sent += len(specs)
 
-    # Group by load_case so we never split a case across requests
     for lcname, lc_df in plan_df.groupby("load_case", sort=False):
         lc_specs: list[tuple[int, BeamLoadItem]] = []
 
@@ -323,7 +383,7 @@ def apply_beam_load_plan_to_midas(
 
             ecc = float(row.get("eccentricity", 0.0))
             use_ecc = abs(ecc) > 1e-9
-            ecc_dir = "GZ"  # vertical offset for horizontal wind (keep your convention)
+            ecc_dir = "GZ"
 
             item = BeamLoadItem(
                 ID=next_id,
@@ -351,19 +411,15 @@ def apply_beam_load_plan_to_midas(
             )
             continue
 
-        # If adding this whole load case would push us over chunk_size,
-        # flush current chunk first (break only between cases).
         if current_specs and (len(current_specs) + len(lc_specs) > chunk_size):
             _send_specs(current_specs, reason=f"before load case {lcname}")
             current_specs = []
 
-        # If this single load case exceeds chunk_size, still send as one request.
         if len(lc_specs) > chunk_size:
             _send_specs(lc_specs, reason=f"large_case:{lcname}")
         else:
             current_specs.extend(lc_specs)
 
-    # Flush any remaining load cases
     if current_specs:
         _send_specs(current_specs, reason="final")
 
@@ -373,3 +429,14 @@ def apply_beam_load_plan_to_midas(
     )
 
     return plan_df
+
+
+__all__ = [
+    "compute_section_exposures",
+    "get_section_properties_cached",
+    "_get_element_to_section_map",
+    "build_uniform_pressure_beam_load_plan_from_depths",
+    "build_uniform_pressure_beam_load_plan_for_group",
+    "build_uniform_load_beam_load_plan_for_group",
+    "apply_beam_load_plan_to_midas",
+]

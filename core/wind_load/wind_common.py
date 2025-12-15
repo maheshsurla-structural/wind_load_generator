@@ -12,7 +12,7 @@ from core.wind_load.beam_load import (
     _get_element_to_section_map,
     get_section_properties_cached,
 )
-from core.wind_load.compute_section_exposures import compute_section_exposures
+from core.wind_load.beam_load import compute_section_exposures
 
 
 # =============================================================================
