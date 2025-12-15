@@ -6,7 +6,7 @@ import pandas as pd
 from functools import lru_cache
 from midas.resources.element_beam_load import BeamLoadItem, BeamLoadResource
 from midas import elements, get_section_properties
-from core.wind_load.debug_sink import DebugSink  # add
+from core.wind_load.debug import DebugSink
 from core.wind_load.group_cache import get_group_element_ids
 
 @lru_cache(maxsize=1)

@@ -5,7 +5,8 @@ from typing import Sequence, Iterable, Mapping
 import pandas as pd
 
 from core.wind_load.beam_load import apply_beam_load_plan_to_midas
-from core.wind_load.debug_utils import summarize_plan
+
+from core.wind_load.debug import summarize_plan
 
 from core.wind_load.wind_common import (
     parse_quadrant_from_load_case_name,

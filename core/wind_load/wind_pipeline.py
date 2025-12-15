@@ -4,7 +4,8 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, Iterable, Tuple
 import pandas as pd
 
-from core.wind_load.debug_utils import summarize_plan
+
+from core.wind_load.debug import summarize_plan
 from core.wind_load.beam_load import apply_beam_load_plan_to_midas
 from core.wind_load.plan_common import combine_plans
 

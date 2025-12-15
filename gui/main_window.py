@@ -31,7 +31,7 @@ from core.app_bus import get_app_bus
 from core.thread_pool import run_in_thread
 from core.worker import Worker
 
-from core.wind_load.debug_sink import DebugSink
+from core.wind_load.debug import DebugSink
 from core.wind_load import wind_pipeline as wp
 
 from gui.dialogs.control_data import ControlData

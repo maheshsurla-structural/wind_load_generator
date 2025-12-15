@@ -10,7 +10,7 @@ import pandas as pd
 
 from wind_database import wind_db
 
-from core.wind_load.debug_utils import summarize_plan
+from core.wind_load.debug import summarize_plan
 from core.wind_load.beam_load import apply_beam_load_plan_to_midas
 from core.wind_load.group_cache import get_group_element_ids
 
