@@ -323,26 +323,43 @@ def build_uniform_load_beam_load_plan_for_group(
 def apply_beam_load_plan_to_midas(
     plan_df: pd.DataFrame,
     *,
-    max_items_per_put: int = 5000,   # Option B: cap total ITEMS per PUT
+    max_items_per_put: int = 5000,   # Option B: limit total ITEMS per request
     debug: DebugSink | None = None,
     debug_label: str = "ALL_WIND",
     replace_existing_for_plan_load_cases: bool = True,
-    dedupe_plan: bool = True,        # ✅ recommended if elements can overlap across groups
+    aggregate_duplicates: bool = True,
 ) -> pd.DataFrame:
     """
-    Apply full plan to MIDAS using element-batched PUTs with a cap on total ITEMS.
+    Structured + safe apply:
 
-    Guarantees:
-      - An element is PUT at most once per run (never split across PUTs)
-      - Request payload size is controlled by total ITEMS <= max_items_per_put (approx by count)
-      - IDs are unique within each element (MIDAS behavior)
-      - Optional "safe replace": only remove existing items whose LCNAME appears in this plan
-      - Optional de-dupe: if the same (eid, case, dir, group, ecc) appears multiple times, sum line_load
+    1) Read existing /db/bmld once
+    2) Build per-element next ID map once (MIDAS IDs are unique within element)
+    3) Iterate the plan in load-case order (easy to reason about)
+       - allocate IDs per element
+       - build BeamLoadItem objects
+       - store as new_by_eid[eid] (element -> list[BeamLoadItem])
+    4) Merge per element once (optional safe replace for only plan cases)
+    5) PUT in batches of elements, limiting sum(ITEMS) <= max_items_per_put
+       - never splits an element across PUTs
+       - an element is sent at most once per run
 
-    Required plan_df columns:
-      element_id, line_load, load_case, load_direction, load_group
-    Optional:
-      eccentricity
+    Parameters
+    ----------
+    plan_df : pd.DataFrame
+        Required cols: element_id, line_load, load_case, load_direction, load_group
+        Optional: eccentricity
+    max_items_per_put : int
+        Upper bound on total ITEM records in a single PUT request.
+    replace_existing_for_plan_load_cases : bool
+        If True, remove existing items whose LCNAME is in the plan's load cases.
+    aggregate_duplicates : bool
+        If True, combines duplicate rows by summing line_load for identical
+        (element_id, load_case, load_direction, load_group, eccentricity).
+
+    Returns
+    -------
+    pd.DataFrame
+        The (sorted/possibly-aggregated) plan_df actually applied.
     """
     if plan_df is None or plan_df.empty:
         print("[apply_beam_load_plan_to_midas] plan_df is empty; nothing to send.")
@@ -355,148 +372,93 @@ def apply_beam_load_plan_to_midas(
 
     max_items_per_put = max(int(max_items_per_put), 1)
 
-    # -------------------------
-    # 0) Normalize + optional de-dupe
-    # -------------------------
+    # -----------------------------
+    # 0) Normalize + (optional) aggregate duplicates
+    # -----------------------------
     df = plan_df.copy()
 
-    # Ensure eccentricity column exists (and is numeric)
-    if "eccentricity" not in df.columns:
-        df["eccentricity"] = 0.0
-    df["eccentricity"] = pd.to_numeric(df["eccentricity"], errors="coerce").fillna(0.0)
-
-    # Normalize strings
+    # normalize strings early
     df["load_case"] = df["load_case"].astype(str).str.strip()
     df["load_direction"] = df["load_direction"].astype(str).str.strip()
     df["load_group"] = df["load_group"].astype(str).str.strip()
 
-    # Make sure element_id + line_load are numeric
-    df["element_id"] = pd.to_numeric(df["element_id"], errors="coerce")
-    df["line_load"] = pd.to_numeric(df["line_load"], errors="coerce").fillna(0.0)
+    if "eccentricity" not in df.columns:
+        df["eccentricity"] = 0.0
+    df["eccentricity"] = pd.to_numeric(df["eccentricity"], errors="coerce").fillna(0.0)
 
-    # Drop invalid element_ids
-    df = df[df["element_id"].notna()].copy()
+    df["element_id"] = pd.to_numeric(df["element_id"], errors="coerce")
+    df["line_load"] = pd.to_numeric(df["line_load"], errors="coerce")
+
+    df = df.dropna(subset=["element_id", "line_load"])
     df["element_id"] = df["element_id"].astype(int)
 
-    # Drop ~0 loads early
-    EPS = 1e-9
-    df = df[df["line_load"].abs() > EPS].copy()
-
-    if df.empty:
-        print("[apply_beam_load_plan_to_midas] All loads ~0; nothing to send.")
-        return plan_df
-
-    if dedupe_plan:
-        # If the same element ends up with repeated rows (eg. overlapping groups),
-        # sum line_load so MIDAS doesn't get duplicate ITEMS unintentionally.
+    if aggregate_duplicates:
+        key_cols = ["element_id", "load_case", "load_direction", "load_group", "eccentricity"]
         df = (
-            df.groupby(
-                ["element_id", "load_case", "load_direction", "load_group", "eccentricity"],
-                as_index=False,
-                sort=False,
-            )["line_load"]
+            df.groupby(key_cols, as_index=False, sort=False)["line_load"]
             .sum()
         )
-        df = df[df["line_load"].abs() > EPS].copy()
 
-        if df.empty:
-            print("[apply_beam_load_plan_to_midas] All loads ~0 after dedupe; nothing to send.")
-            return plan_df
-
-    # Stable ordering (debug/repro)
-    df = df.sort_values(["element_id", "load_case", "load_direction"], kind="stable").reset_index(drop=True)
+    # stable ordering for "case-by-case" building
+    df = df.sort_values(
+        ["load_case", "load_direction", "element_id"],
+        kind="stable",
+    ).reset_index(drop=True)
 
     if debug and debug.enabled:
-        # This splits per case in your DebugSink; harmless even though we send element-batched
         debug.dump_plan(df, label=debug_label, split_per_case=True)
 
-    # ------------------------------------------------------------
+    # -----------------------------
     # 1) Read existing /db/bmld once
-    # ------------------------------------------------------------
+    # -----------------------------
     raw_existing = BeamLoadResource.get_raw() or {}
+
     existing_items_by_eid: Dict[int, List[Dict[str, Any]]] = {}
-    for eid_str, elem_block in raw_existing.items():
+    for eid_str, elem_block in (raw_existing or {}).items():
         try:
             eid = int(eid_str)
         except (TypeError, ValueError):
             continue
         existing_items_by_eid[eid] = list(((elem_block or {}).get("ITEMS", []) or []))
 
-    # ------------------------------------------------------------
-    # 2) Determine which load cases are in THIS plan (safe replace scope)
-    # ------------------------------------------------------------
-    plan_cases: set[str] = set(df["load_case"].astype(str).str.strip())
+    # -----------------------------
+    # 2) Build per-element next-id map once (YOUR helper)
+    # -----------------------------
+    next_id_by_eid = _next_id_by_element_from_raw(raw_existing)
 
-    # ------------------------------------------------------------
-    # 3) Group PLAN rows by element (we'll create BeamLoadItems later)
-    # ------------------------------------------------------------
-    rows_by_eid: Dict[int, List[dict]] = defaultdict(list)
-    for r in df.itertuples(index=False):
-        rows_by_eid[int(r.element_id)].append(
-            {
-                "load_case": str(r.load_case).strip(),
-                "load_group": str(r.load_group).strip(),
-                "direction": str(r.load_direction).strip(),
-                "line_load": float(r.line_load),
-                "ecc": float(getattr(r, "eccentricity", 0.0) or 0.0),
-            }
-        )
+    def alloc_id(eid: int) -> int:
+        nxt = next_id_by_eid.get(eid, 1)
+        next_id_by_eid[eid] = nxt + 1
+        return nxt
 
-    touched_eids = sorted(rows_by_eid.keys())
-    if not touched_eids:
-        print("[apply_beam_load_plan_to_midas] No touched elements; nothing to send.")
-        return plan_df
+    # For safe replace: all load cases present in this plan
+    plan_cases = set(df["load_case"].astype(str).str.strip())
 
-    # ------------------------------------------------------------
-    # Helper: next ID from an ITEMS list (after optional filtering!)
-    # ------------------------------------------------------------
-    def _next_id_from_items(items: List[Dict[str, Any]]) -> int:
-        m = 0
-        for it in items or []:
-            try:
-                m = max(m, int(it.get("ID", 0)))
-            except (TypeError, ValueError):
-                pass
-        return (m + 1) if m > 0 else 1
+    # -----------------------------
+    # 3) Build NEW items in load-case order, but store grouped by element
+    # -----------------------------
+    new_by_eid: Dict[int, List[BeamLoadItem]] = defaultdict(list)
 
-    # ------------------------------------------------------------
-    # 4) Pre-merge per element ONCE and compute merged ITEM counts
-    #    - filter existing by plan cases (optional)
-    #    - allocate IDs based on filtered existing (keeps IDs compact)
-    # ------------------------------------------------------------
-    merged_items_by_eid: Dict[int, List[Dict[str, Any]]] = {}
-    merged_size_by_eid: Dict[int, int] = {}
-    new_items_by_eid: Dict[int, List[BeamLoadItem]] = defaultdict(list)
+    # Build items case-by-case (your preferred mental model)
+    for lcname, lc_df in df.groupby("load_case", sort=False):
+        lcname = str(lcname).strip()
+        if not lcname:
+            continue
 
-    for eid in touched_eids:
-        existing = list(existing_items_by_eid.get(eid, []) or [])
-
-        if replace_existing_for_plan_load_cases and plan_cases:
-            existing = [
-                it for it in existing
-                if str(it.get("LCNAME", "")).strip() not in plan_cases
-            ]
-
-        next_id = _next_id_from_items(existing)
-
-        # Start merged list with kept existing
-        merged = list(existing)
-
-        # Append new items (assign IDs now)
-        for row in rows_by_eid[eid]:
-            q = float(row["line_load"])
-            if abs(q) < EPS:
+        for row in lc_df.itertuples(index=False):
+            eid = int(getattr(row, "element_id"))
+            q = float(getattr(row, "line_load"))
+            if abs(q) < 1e-9:
                 continue
 
-            lcname = row["load_case"]
-            direction = row["direction"]
-            ldgr = row["load_group"]
+            direction = str(getattr(row, "load_direction"))
+            ldgr = str(getattr(row, "load_group"))
 
-            ecc = float(row["ecc"])
-            use_ecc = abs(ecc) > EPS
+            ecc = float(getattr(row, "eccentricity", 0.0))
+            use_ecc = abs(ecc) > 1e-9
 
             item = BeamLoadItem(
-                ID=next_id,
+                ID=alloc_id(eid),          # ✅ per-element ID allocation
                 LCNAME=lcname,
                 GROUP_NAME=ldgr,
                 CMD="BEAM",
@@ -511,29 +473,39 @@ def apply_beam_load_plan_to_midas(
                 I_END=ecc,
                 J_END=ecc,
             )
-            next_id += 1
+            new_by_eid[eid].append(item)
 
-            new_items_by_eid[eid].append(item)
-            merged.append(item.to_dict())
+    if not new_by_eid:
+        print("[apply_beam_load_plan_to_midas] All loads ~0; nothing to send.")
+        return df
 
-        if merged:
-            merged_items_by_eid[eid] = merged
-            merged_size_by_eid[eid] = len(merged)
-        else:
-            # If an element ends up with no items at all (unlikely), skip it
-            merged_items_by_eid[eid] = []
-            merged_size_by_eid[eid] = 0
+    touched_eids = sorted(new_by_eid.keys())
 
-    # Only keep elements that actually have something to PUT (merged items non-empty)
-    touched_eids = [eid for eid in touched_eids if merged_size_by_eid.get(eid, 0) > 0]
-    if not touched_eids:
-        print("[apply_beam_load_plan_to_midas] No merged ITEMS to PUT; nothing to send.")
-        return plan_df
+    # -----------------------------
+    # 4) Merge per element ONCE (optional safe replace)
+    # -----------------------------
+    merged_items_by_eid: Dict[int, List[Dict[str, Any]]] = {}
+    merged_size_by_eid: Dict[int, int] = {}
 
-    # ------------------------------------------------------------
-    # 5) PUT in batches so sum(merged ITEMS) <= max_items_per_put
-    #    IMPORTANT: never split an element across PUTs.
-    # ------------------------------------------------------------
+    for eid in touched_eids:
+        existing = existing_items_by_eid.get(eid, [])
+
+        if replace_existing_for_plan_load_cases and plan_cases:
+            existing = [
+                it for it in existing
+                if str(it.get("LCNAME", "")).strip() not in plan_cases
+            ]
+
+        merged = list(existing)
+        merged.extend(it.to_dict() for it in new_by_eid[eid])
+
+        merged_items_by_eid[eid] = merged
+        merged_size_by_eid[eid] = len(merged)
+
+    # -----------------------------
+    # 5) PUT in batches of elements such that sum(ITEMS) <= max_items_per_put
+    #    Never split an element across PUTs.
+    # -----------------------------
     sent_new = 0
     req = 0
     idx = 0
@@ -544,16 +516,16 @@ def apply_beam_load_plan_to_midas(
 
         while idx < len(touched_eids):
             eid = touched_eids[idx]
-            elem_items = int(merged_size_by_eid[eid])
+            elem_items = merged_size_by_eid[eid]
 
-            # If one element alone exceeds limit, send it alone
+            # If single element exceeds limit, still send it alone
             if not batch and elem_items > max_items_per_put:
                 batch = [eid]
                 batch_items = elem_items
                 idx += 1
                 break
 
-            # If adding this element would exceed the limit, stop the batch
+            # If adding would exceed limit, stop here
             if batch and (batch_items + elem_items > max_items_per_put):
                 break
 
@@ -564,31 +536,30 @@ def apply_beam_load_plan_to_midas(
         assign = {str(eid): {"ITEMS": merged_items_by_eid[eid]} for eid in batch}
 
         req += 1
+        new_count = sum(len(new_by_eid[eid]) for eid in batch)
         print(
             f"[apply_beam_load_plan_to_midas] PUT {req}: "
-            f"{len(batch)} elements, {batch_items} ITEMS (limit={max_items_per_put})"
+            f"{len(batch)} elements, {batch_items} ITEMS, {new_count} NEW (limit={max_items_per_put})"
         )
 
         if debug and debug.enabled:
             batch_specs: List[Tuple[int, BeamLoadItem]] = []
             for eid in batch:
-                batch_specs.extend((eid, it) for it in new_items_by_eid.get(eid, []))
+                batch_specs.extend((eid, it) for it in new_by_eid[eid])
+
             debug.dump_chunk_specs(
                 batch_specs,
                 label=debug_label,
                 chunk_index=req,
-                reason=f"items<= {max_items_per_put}",
+                reason=f"element-batched items<= {max_items_per_put}",
             )
 
         BeamLoadResource.put_raw({"Assign": assign})
 
-        sent_new += sum(len(new_items_by_eid.get(eid, [])) for eid in batch)
+        sent_new += new_count
 
     print(f"[apply_beam_load_plan_to_midas] Done. Sent {sent_new} new beam load items.")
-    return plan_df
-
-
-
+    return df
 
 
 __all__ = [
