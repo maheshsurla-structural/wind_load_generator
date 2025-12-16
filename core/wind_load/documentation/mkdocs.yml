@@ -1,0 +1,27 @@
+site_name: Wind Load Documentation
+site_dir: site
+
+theme:
+  name: material
+  features:
+    - navigation.indexes
+    - toc.follow
+
+nav:
+  - Home: index.md
+
+  - Beam Load:
+      - beam_load/index.md
+      - Next ID per element: beam_load/next_id_by_element.md
+      - Get Element to Section Map: beam_load/get_element_to_section_map_notes.md
+
+  - Live Wind Loads: live_wind_load.md
+  - Structural Wind Loads: structural_wind_loads.md
+  - Substructure Wind Loads: substructure_wind_loads.md
+
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - pymdownx.superfences
+  - pymdownx.details
