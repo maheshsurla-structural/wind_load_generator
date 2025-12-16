@@ -1,21 +1,40 @@
 # core/wind_load/beam_load.py
+
+"""
+Build and apply wind beam line-loads to MIDAS.
+
+This module provides two main steps:
+
+1) Build "plan" DataFrames (pure data, no MIDAS write)
+2) Apply a plan to MIDAS (/db/bmld)
+
+Key implementation detail:
+- /db/bmld stores loads per ELEMENT under ITEMS[].
+- When writing, we *merge existing ITEMS + new ITEMS* per element to avoid accidental overwrites.
+- IDs can be assigned:
+    a) globally (start_id provided), or
+    b) per-element (default when start_id is None).
+"""
+
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Sequence, Dict, List
-
+from typing import Sequence, Dict, List, Any, Tuple
+from collections import defaultdict
 import numpy as np
 import pandas as pd
 
+# MIDAS API: model data + beam load resource
 from midas import elements, get_section_properties
 from midas.resources.element_beam_load import BeamLoadItem, BeamLoadResource
 
+# Project helpers: debug + group->elements resolution
 from core.wind_load.debug import DebugSink
 from core.wind_load.groups import get_group_element_ids
 
 
 # =============================================================================
-# Section exposure helper (moved from compute_section_exposures.py)
+# Section exposure helper
 # =============================================================================
 
 def compute_section_exposures(
@@ -49,7 +68,7 @@ def compute_section_exposures(
 
     property_ids, left_vals, right_vals, top_vals, bottom_vals = [], [], [], [], []
 
-    for row in section_properties:
+    for row in section_properties or []:
         if len(row) <= COL_BOTTOM:
             continue
         try:
@@ -113,7 +132,6 @@ def _get_all_elements_cached() -> dict:
 def get_section_properties_cached():
     """
     Cached wrapper around midas.get_section_properties().
-
     All callers share a single MIDAS /db/SECT read.
     """
     return get_section_properties()
@@ -123,25 +141,25 @@ def get_section_properties_cached():
 # Beam load ID + element->section helpers
 # =============================================================================
 
-def _get_next_beam_load_id() -> int:
-    """
-    Look at /db/bmld and return max(ITEM.ID) + 1.
-    If there are no existing beam loads, return 1.
-    """
-    raw = BeamLoadResource.get_raw() or {}
+def _next_id_by_element_from_raw(raw: Dict[str, Any]) -> Dict[int, int]:
+    """Per-element next ID map from raw /db/bmld: {eid: max(ID)+1}."""
+    out: Dict[int, int] = {}
+    for elem_id_str, elem_block in (raw or {}).items():
+        try:
+            eid = int(elem_id_str)
+        except (TypeError, ValueError):
+            continue
 
-    max_id = 0
-    for elem_block in raw.values():
         items = (elem_block or {}).get("ITEMS", []) or []
-        for item_dict in items:
+        max_id = 0
+        for it in items:
             try:
-                i = int(item_dict.get("ID", 0))
+                max_id = max(max_id, int(it.get("ID", 0)))
             except (TypeError, ValueError):
                 continue
-            if i > max_id:
-                max_id = i
 
-    return max_id + 1 if max_id > 0 else 1
+        out[eid] = (max_id + 1) if max_id > 0 else 1
+    return out
 
 
 def _get_element_to_section_map(element_ids: List[int]) -> Dict[int, int]:
@@ -227,7 +245,7 @@ def build_uniform_pressure_beam_load_plan_for_group(
     then call build_uniform_pressure_beam_load_plan_from_depths().
     """
     element_ids = get_group_element_ids(group_name)
-    elem_to_sect = _get_element_to_section_map(element_ids)
+    elem_to_sect = _get_element_to_section_map(list(element_ids))
 
     section_props_raw = get_section_properties_cached()
     exposures_df = compute_section_exposures(
@@ -299,95 +317,187 @@ def build_uniform_load_beam_load_plan_for_group(
 
 
 # =============================================================================
-# STEP 2: Apply plan to MIDAS
+# STEP 2: Apply plan to MIDAS (safe merge-per-element write)
 # =============================================================================
 
 def apply_beam_load_plan_to_midas(
     plan_df: pd.DataFrame,
     *,
-    start_id: int | None = None,
-    chunk_size: int = 5000,
+    max_items_per_put: int = 5000,   # Option B: cap total ITEMS per PUT
     debug: DebugSink | None = None,
     debug_label: str = "ALL_WIND",
+    replace_existing_for_plan_load_cases: bool = True,
+    dedupe_plan: bool = True,        # ✅ recommended if elements can overlap across groups
 ) -> pd.DataFrame:
     """
-    Take a plan DataFrame with columns:
-      ['element_id', 'line_load', 'load_case', 'load_direction', 'load_group']
-    and send them as BeamLoadItem specs to MIDAS.
+    Apply full plan to MIDAS using element-batched PUTs with a cap on total ITEMS.
 
-    IMPORTANT:
-      - Chunking is done **between load cases only**.
-      - A single load_case is never split across two requests.
+    Guarantees:
+      - An element is PUT at most once per run (never split across PUTs)
+      - Request payload size is controlled by total ITEMS <= max_items_per_put (approx by count)
+      - IDs are unique within each element (MIDAS behavior)
+      - Optional "safe replace": only remove existing items whose LCNAME appears in this plan
+      - Optional de-dupe: if the same (eid, case, dir, group, ecc) appears multiple times, sum line_load
+
+    Required plan_df columns:
+      element_id, line_load, load_case, load_direction, load_group
+    Optional:
+      eccentricity
     """
     if plan_df is None or plan_df.empty:
         print("[apply_beam_load_plan_to_midas] plan_df is empty; nothing to send.")
         return plan_df
 
-    if start_id is None:
-        start_id = _get_next_beam_load_id()
+    required = {"element_id", "line_load", "load_case", "load_direction", "load_group"}
+    missing = required - set(plan_df.columns)
+    if missing:
+        raise ValueError(f"plan_df missing required columns: {sorted(missing)}")
 
-    plan_df = plan_df.sort_values(
-        ["load_case", "load_direction", "element_id"],
-        kind="stable",
-    ).reset_index(drop=True)
+    max_items_per_put = max(int(max_items_per_put), 1)
+
+    # -------------------------
+    # 0) Normalize + optional de-dupe
+    # -------------------------
+    df = plan_df.copy()
+
+    # Ensure eccentricity column exists (and is numeric)
+    if "eccentricity" not in df.columns:
+        df["eccentricity"] = 0.0
+    df["eccentricity"] = pd.to_numeric(df["eccentricity"], errors="coerce").fillna(0.0)
+
+    # Normalize strings
+    df["load_case"] = df["load_case"].astype(str).str.strip()
+    df["load_direction"] = df["load_direction"].astype(str).str.strip()
+    df["load_group"] = df["load_group"].astype(str).str.strip()
+
+    # Make sure element_id + line_load are numeric
+    df["element_id"] = pd.to_numeric(df["element_id"], errors="coerce")
+    df["line_load"] = pd.to_numeric(df["line_load"], errors="coerce").fillna(0.0)
+
+    # Drop invalid element_ids
+    df = df[df["element_id"].notna()].copy()
+    df["element_id"] = df["element_id"].astype(int)
+
+    # Drop ~0 loads early
+    EPS = 1e-9
+    df = df[df["line_load"].abs() > EPS].copy()
+
+    if df.empty:
+        print("[apply_beam_load_plan_to_midas] All loads ~0; nothing to send.")
+        return plan_df
+
+    if dedupe_plan:
+        # If the same element ends up with repeated rows (eg. overlapping groups),
+        # sum line_load so MIDAS doesn't get duplicate ITEMS unintentionally.
+        df = (
+            df.groupby(
+                ["element_id", "load_case", "load_direction", "load_group", "eccentricity"],
+                as_index=False,
+                sort=False,
+            )["line_load"]
+            .sum()
+        )
+        df = df[df["line_load"].abs() > EPS].copy()
+
+        if df.empty:
+            print("[apply_beam_load_plan_to_midas] All loads ~0 after dedupe; nothing to send.")
+            return plan_df
+
+    # Stable ordering (debug/repro)
+    df = df.sort_values(["element_id", "load_case", "load_direction"], kind="stable").reset_index(drop=True)
 
     if debug and debug.enabled:
-        debug.dump_plan(plan_df, label=debug_label, split_per_case=True)
+        # This splits per case in your DebugSink; harmless even though we send element-batched
+        debug.dump_plan(df, label=debug_label, split_per_case=True)
 
-    total_rows = len(plan_df)
-    print(
-        f"[apply_beam_load_plan_to_midas] Starting IDs at {start_id}, "
-        f"preparing {total_rows} beam loads in chunks of ~{chunk_size} rows, "
-        f"but never splitting a load case..."
-    )
+    # ------------------------------------------------------------
+    # 1) Read existing /db/bmld once
+    # ------------------------------------------------------------
+    raw_existing = BeamLoadResource.get_raw() or {}
+    existing_items_by_eid: Dict[int, List[Dict[str, Any]]] = {}
+    for eid_str, elem_block in raw_existing.items():
+        try:
+            eid = int(eid_str)
+        except (TypeError, ValueError):
+            continue
+        existing_items_by_eid[eid] = list(((elem_block or {}).get("ITEMS", []) or []))
 
-    next_id = start_id
-    sent = 0
-    chunk_index = 0
-    current_specs: list[tuple[int, BeamLoadItem]] = []
+    # ------------------------------------------------------------
+    # 2) Determine which load cases are in THIS plan (safe replace scope)
+    # ------------------------------------------------------------
+    plan_cases: set[str] = set(df["load_case"].astype(str).str.strip())
 
-    def _send_specs(specs: list[tuple[int, BeamLoadItem]], *, reason: str = "") -> None:
-        nonlocal sent, chunk_index
-        if not specs:
-            return
-
-        chunk_index += 1
-        print(
-            f"[apply_beam_load_plan_to_midas] "
-            f"Sending chunk of {len(specs)} specs to MIDAS..."
-            + (f" ({reason})" if reason else "")
+    # ------------------------------------------------------------
+    # 3) Group PLAN rows by element (we'll create BeamLoadItems later)
+    # ------------------------------------------------------------
+    rows_by_eid: Dict[int, List[dict]] = defaultdict(list)
+    for r in df.itertuples(index=False):
+        rows_by_eid[int(r.element_id)].append(
+            {
+                "load_case": str(r.load_case).strip(),
+                "load_group": str(r.load_group).strip(),
+                "direction": str(r.load_direction).strip(),
+                "line_load": float(r.line_load),
+                "ecc": float(getattr(r, "eccentricity", 0.0) or 0.0),
+            }
         )
 
-        if debug and debug.enabled:
-            debug.dump_chunk_specs(
-                specs,
-                label=debug_label,
-                chunk_index=chunk_index,
-                reason=reason,
-            )
+    touched_eids = sorted(rows_by_eid.keys())
+    if not touched_eids:
+        print("[apply_beam_load_plan_to_midas] No touched elements; nothing to send.")
+        return plan_df
 
-        BeamLoadResource.create_from_specs(specs)
-        sent += len(specs)
+    # ------------------------------------------------------------
+    # Helper: next ID from an ITEMS list (after optional filtering!)
+    # ------------------------------------------------------------
+    def _next_id_from_items(items: List[Dict[str, Any]]) -> int:
+        m = 0
+        for it in items or []:
+            try:
+                m = max(m, int(it.get("ID", 0)))
+            except (TypeError, ValueError):
+                pass
+        return (m + 1) if m > 0 else 1
 
-    for lcname, lc_df in plan_df.groupby("load_case", sort=False):
-        lc_specs: list[tuple[int, BeamLoadItem]] = []
+    # ------------------------------------------------------------
+    # 4) Pre-merge per element ONCE and compute merged ITEM counts
+    #    - filter existing by plan cases (optional)
+    #    - allocate IDs based on filtered existing (keeps IDs compact)
+    # ------------------------------------------------------------
+    merged_items_by_eid: Dict[int, List[Dict[str, Any]]] = {}
+    merged_size_by_eid: Dict[int, int] = {}
+    new_items_by_eid: Dict[int, List[BeamLoadItem]] = defaultdict(list)
 
-        for _, row in lc_df.iterrows():
-            element_id = int(row["element_id"])
+    for eid in touched_eids:
+        existing = list(existing_items_by_eid.get(eid, []) or [])
+
+        if replace_existing_for_plan_load_cases and plan_cases:
+            existing = [
+                it for it in existing
+                if str(it.get("LCNAME", "")).strip() not in plan_cases
+            ]
+
+        next_id = _next_id_from_items(existing)
+
+        # Start merged list with kept existing
+        merged = list(existing)
+
+        # Append new items (assign IDs now)
+        for row in rows_by_eid[eid]:
             q = float(row["line_load"])
-            if abs(q) < 1e-9:
+            if abs(q) < EPS:
                 continue
 
-            ldgr = str(row["load_group"])
-            direction = str(row["load_direction"])
+            lcname = row["load_case"]
+            direction = row["direction"]
+            ldgr = row["load_group"]
 
-            ecc = float(row.get("eccentricity", 0.0))
-            use_ecc = abs(ecc) > 1e-9
-            ecc_dir = "GZ"
+            ecc = float(row["ecc"])
+            use_ecc = abs(ecc) > EPS
 
             item = BeamLoadItem(
                 ID=next_id,
-                LCNAME=str(lcname),
+                LCNAME=lcname,
                 GROUP_NAME=ldgr,
                 CMD="BEAM",
                 TYPE="UNILOAD",
@@ -397,38 +507,88 @@ def apply_beam_load_plan_to_midas(
                 D=[0, 1, 0, 0],
                 P=[q, q, 0, 0],
                 ECCEN_TYPE=1,
-                ECCEN_DIR=ecc_dir,
+                ECCEN_DIR="GZ",
                 I_END=ecc,
                 J_END=ecc,
             )
-            lc_specs.append((element_id, item))
             next_id += 1
 
-        if not lc_specs:
-            print(
-                f"[apply_beam_load_plan_to_midas] "
-                f"All loads ~0 for load case {lcname}; skipping."
-            )
-            continue
+            new_items_by_eid[eid].append(item)
+            merged.append(item.to_dict())
 
-        if current_specs and (len(current_specs) + len(lc_specs) > chunk_size):
-            _send_specs(current_specs, reason=f"before load case {lcname}")
-            current_specs = []
-
-        if len(lc_specs) > chunk_size:
-            _send_specs(lc_specs, reason=f"large_case:{lcname}")
+        if merged:
+            merged_items_by_eid[eid] = merged
+            merged_size_by_eid[eid] = len(merged)
         else:
-            current_specs.extend(lc_specs)
+            # If an element ends up with no items at all (unlikely), skip it
+            merged_items_by_eid[eid] = []
+            merged_size_by_eid[eid] = 0
 
-    if current_specs:
-        _send_specs(current_specs, reason="final")
+    # Only keep elements that actually have something to PUT (merged items non-empty)
+    touched_eids = [eid for eid in touched_eids if merged_size_by_eid.get(eid, 0) > 0]
+    if not touched_eids:
+        print("[apply_beam_load_plan_to_midas] No merged ITEMS to PUT; nothing to send.")
+        return plan_df
 
-    print(
-        f"[apply_beam_load_plan_to_midas] Done. Sent {sent} specs "
-        f"({total_rows} plan rows, some may have been skipped as ~0)."
-    )
+    # ------------------------------------------------------------
+    # 5) PUT in batches so sum(merged ITEMS) <= max_items_per_put
+    #    IMPORTANT: never split an element across PUTs.
+    # ------------------------------------------------------------
+    sent_new = 0
+    req = 0
+    idx = 0
 
+    while idx < len(touched_eids):
+        batch: List[int] = []
+        batch_items = 0
+
+        while idx < len(touched_eids):
+            eid = touched_eids[idx]
+            elem_items = int(merged_size_by_eid[eid])
+
+            # If one element alone exceeds limit, send it alone
+            if not batch and elem_items > max_items_per_put:
+                batch = [eid]
+                batch_items = elem_items
+                idx += 1
+                break
+
+            # If adding this element would exceed the limit, stop the batch
+            if batch and (batch_items + elem_items > max_items_per_put):
+                break
+
+            batch.append(eid)
+            batch_items += elem_items
+            idx += 1
+
+        assign = {str(eid): {"ITEMS": merged_items_by_eid[eid]} for eid in batch}
+
+        req += 1
+        print(
+            f"[apply_beam_load_plan_to_midas] PUT {req}: "
+            f"{len(batch)} elements, {batch_items} ITEMS (limit={max_items_per_put})"
+        )
+
+        if debug and debug.enabled:
+            batch_specs: List[Tuple[int, BeamLoadItem]] = []
+            for eid in batch:
+                batch_specs.extend((eid, it) for it in new_items_by_eid.get(eid, []))
+            debug.dump_chunk_specs(
+                batch_specs,
+                label=debug_label,
+                chunk_index=req,
+                reason=f"items<= {max_items_per_put}",
+            )
+
+        BeamLoadResource.put_raw({"Assign": assign})
+
+        sent_new += sum(len(new_items_by_eid.get(eid, [])) for eid in batch)
+
+    print(f"[apply_beam_load_plan_to_midas] Done. Sent {sent_new} new beam load items.")
     return plan_df
+
+
+
 
 
 __all__ = [

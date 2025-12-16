@@ -200,27 +200,58 @@ def build_all_wind_plans(
     return all_plans, flags
 
 
+
 def apply_plans_to_midas(
-    all_plans: list[pd.DataFrame],
+    all_plans,
+    *,
     dbg=None,
     debug_enabled: bool = False,
+    max_items_per_put: int = 5000,
+    replace_existing_for_plan_load_cases: bool = True,
 ) -> None:
-    if not all_plans:
+    """
+    Apply ALL wind load plans to MIDAS in ONE apply call.
+
+    Benefits:
+      - only one /db/bmld read
+      - fewer PUT requests overall
+      - still safe: only replaces load cases present in the combined plan
+      - chunks PUT payloads by total ITEMS <= max_items_per_put (never splits an element)
+
+    Parameters
+    ----------
+    all_plans : list[pd.DataFrame]
+        Plans returned by build_all_wind_plans()
+    dbg : DebugSink | None
+        Debug sink
+    debug_enabled : bool
+        If True, pass dbg into the apply function
+    max_items_per_put : int
+        Upper bound on total ITEMS sent per PUT request (Option B)
+    replace_existing_for_plan_load_cases : bool
+        If True, removes existing ITEMS whose LCNAME is in the combined plan load cases
+    """
+    plans = [p for p in (all_plans or []) if p is not None and not p.empty]
+    if not plans:
+        print("[apply_plans_to_midas] No plans to apply.")
         return
 
-    combined = combine_plans(all_plans)
-    if combined is None or combined.empty:
-        return
+    combined = pd.concat(plans, ignore_index=True)
 
-    if debug_enabled:
-        summarize_plan(
-            combined,
-            label="ALL_WIND",
-            sink=dbg,
-            print_summary=False,
-        )
+    print(
+        f"[apply_plans_to_midas] Applying combined plan: "
+        f"{len(combined)} rows, {combined['element_id'].nunique()} elements, "
+        f"{combined['load_case'].nunique()} load cases"
+    )
 
-    apply_beam_load_plan_to_midas(combined, debug=dbg, debug_label="ALL_WIND")
+    apply_beam_load_plan_to_midas(
+        combined,
+        max_items_per_put=max_items_per_put,
+        debug=dbg if debug_enabled else None,
+        debug_label="ALL_WIND",
+        replace_existing_for_plan_load_cases=replace_existing_for_plan_load_cases,
+    )
+
 
 
 def status_message(flags: dict) -> str:
