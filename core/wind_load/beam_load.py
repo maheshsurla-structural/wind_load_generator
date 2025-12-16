@@ -135,7 +135,7 @@ def _validate_axis(exposure_axis: str) -> str:
 # STEP 1: Build plan DataFrames (pure-ish)
 # =============================================================================
 
-def build_uniform_pressure_beam_load_plan_from_depths(
+def convert_pressure_to_line_loads_by_exposure_depth(
     *,
     group_name: str,
     load_case_name: str,
@@ -166,6 +166,7 @@ def build_uniform_pressure_beam_load_plan_from_depths(
         df.sort_values("element_id", inplace=True)
         df.reset_index(drop=True, inplace=True)
     return df
+
 
 def resolve_depths_for_group(
     *,
@@ -202,31 +203,31 @@ def resolve_depths_for_group(
 
     return depth_by_eid
 
-def build_uniform_pressure_beam_load_plan(
-    *,
-    group_name: str,
-    load_case_name: str,
-    pressure: float,
-    udl_direction: str = "GZ",
-    load_group_name: str | None = None,
-    exposure_axis: str = "y",
-    extra_exposure_y_default: float = 0.0,
-    extra_exposure_y_by_id: Dict[int, float] | None = None,
-) -> pd.DataFrame:
-    depth_by_eid = resolve_depths_for_group(
-        group_name=group_name,
-        exposure_axis=exposure_axis,
-        extra_exposure_y_default=extra_exposure_y_default,
-        extra_exposure_y_by_id=extra_exposure_y_by_id,
-    )
-    return build_uniform_pressure_beam_load_plan_from_depths(
-        group_name=group_name,
-        load_case_name=load_case_name,
-        pressure=pressure,
-        udl_direction=udl_direction,
-        depth_by_eid=depth_by_eid,
-        load_group_name=load_group_name or load_case_name,
-    )
+# def build_uniform_pressure_beam_load_plan(
+#     *,
+#     group_name: str,
+#     load_case_name: str,
+#     pressure: float,
+#     udl_direction: str = "GZ",
+#     load_group_name: str | None = None,
+#     exposure_axis: str = "y",
+#     extra_exposure_y_default: float = 0.0,
+#     extra_exposure_y_by_id: Dict[int, float] | None = None,
+# ) -> pd.DataFrame:
+#     depth_by_eid = resolve_depths_for_group(
+#         group_name=group_name,
+#         exposure_axis=exposure_axis,
+#         extra_exposure_y_default=extra_exposure_y_default,
+#         extra_exposure_y_by_id=extra_exposure_y_by_id,
+#     )
+#     return convert_pressure_to_line_loads_by_exposure_depth(
+#         group_name=group_name,
+#         load_case_name=load_case_name,
+#         pressure=pressure,
+#         udl_direction=udl_direction,
+#         depth_by_eid=depth_by_eid,
+#         load_group_name=load_group_name or load_case_name,
+#     )
 
 
 def build_uniform_load_beam_load_plan_for_group(
@@ -531,8 +532,8 @@ __all__ = [
     "get_section_properties_cached",
     "_get_element_to_section_map",
     "resolve_depths_for_group",
-    "build_uniform_pressure_beam_load_plan_from_depths",
-    "build_uniform_pressure_beam_load_plan",
+    "convert_pressure_to_line_loads_by_exposure_depth",
+    # "build_uniform_pressure_beam_load_plan",
     "build_uniform_load_beam_load_plan_for_group",
     "apply_beam_load_plan_to_midas",
 ]

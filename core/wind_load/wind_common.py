@@ -8,7 +8,7 @@ import pandas as pd
 from core.wind_load.groups import get_group_element_ids
 from core.wind_load.beam_load import (
     build_uniform_load_beam_load_plan_for_group,
-    build_uniform_pressure_beam_load_plan_from_depths,
+    convert_pressure_to_line_loads_by_exposure_depth,
     _get_element_to_section_map,
     get_section_properties_cached,
 )
@@ -315,7 +315,7 @@ def build_pressure_plan_from_components(
             if not depth_by_eid:
                 continue
 
-            plan = build_uniform_pressure_beam_load_plan_from_depths(
+            plan = convert_pressure_to_line_loads_by_exposure_depth(
                 group_name=group_name,
                 load_case_name=lc,
                 pressure=p,

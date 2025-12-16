@@ -206,7 +206,7 @@ def apply_plans_to_midas(
     *,
     dbg=None,
     debug_enabled: bool = False,
-    max_items_per_put: int = 5000,
+    max_items_per_put: int = 6000,
     replace_existing_for_plan_load_cases: bool = True,
 ) -> None:
     """
