@@ -4,8 +4,6 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, Iterable, Tuple
 import pandas as pd
 
-
-from core.wind_load.debug import summarize_plan
 from core.wind_load.beam_load import apply_beam_load_plan_to_midas
 
 from core.wind_load.live_wind_loads import build_wl_beam_load_plans_for_deck_groups
@@ -152,7 +150,7 @@ def build_all_wind_plans(
                 group_members=group_members,
                 elements_in_model=elements_in_model,
                 nodes_in_model=nodes_in_model,
-                dbg=dbg,
+                dbg=None,  # ✅ IMPORTANT: no build-stage debug dumps
             ),
         ),
         (
@@ -166,7 +164,7 @@ def build_all_wind_plans(
                 group_members=group_members,
                 elements_in_model=elements_in_model,
                 nodes_in_model=nodes_in_model,
-                dbg=dbg,
+                dbg=None,  # ✅ IMPORTANT: no build-stage debug dumps
             ),
         ),
         (
@@ -179,12 +177,13 @@ def build_all_wind_plans(
                 group_members=group_members,
                 elements_in_model=elements_in_model,
                 nodes_in_model=nodes_in_model,
-                dbg=dbg,
+                dbg=None,  # ✅ IMPORTANT: no build-stage debug dumps
                 extra_exposure_y_default=0.0,
                 extra_exposure_y_by_id=None,
             ),
         ),
     ]
+
 
     for key, enabled, fn in planners:
         if not enabled:
@@ -248,7 +247,7 @@ def apply_plans_to_midas(
         combined,
         max_items_per_put=max_items_per_put,
         debug=dbg if debug_enabled else None,
-        debug_label="ALL_WIND",
+        debug_label="WIND_ASSIGN",
         replace_existing_for_plan_load_cases=replace_existing_for_plan_load_cases,
     )
 

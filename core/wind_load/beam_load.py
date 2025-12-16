@@ -324,7 +324,7 @@ def apply_beam_load_plan_to_midas(
     *,
     max_items_per_put: int = 5000,
     debug: DebugSink | None = None,
-    debug_label: str = "ALL_WIND",
+    debug_label: str = "WIND_ASSIGN",
     replace_existing_for_plan_load_cases: bool = True,
     aggregate_duplicates: bool = True,
     resource: Any = BeamLoadResource,   # dependency injection hook
@@ -332,26 +332,11 @@ def apply_beam_load_plan_to_midas(
     """
     Apply a beam-load plan to MIDAS (/db/bmld) using safe merge-per-element writes.
 
-    Adds per-PUT terminal progress like:
-      PUT #1 | elements=.. | NEW=.. (cum ../..) | TOTAL ITEMS=.. | limit=..
-
-    Parameters
-    ----------
-    plan_df : pd.DataFrame
-        Required cols: element_id, line_load, load_case, load_direction, load_group
-        Optional: eccentricity
-    max_items_per_put : int
-        Upper bound on total ITEM records in a single PUT request.
-    replace_existing_for_plan_load_cases : bool
-        If True, remove existing items whose LCNAME is in the plan's load cases.
-    aggregate_duplicates : bool
-        If True, combines duplicate rows by summing line_load for identical
-        (element_id, load_case, load_direction, load_group, eccentricity).
-
-    Returns
-    -------
-    pd.DataFrame
-        The normalized/aggregated DataFrame that was applied.
+    DEBUG BEHAVIOR (as requested):
+      - No per-case plan dumps
+      - No per-chunk dumps
+      - If debug.enabled and debug has dump_apply_payload(), write exactly ONE JSON at the end
+        containing the exact PUT payload(s) sent to MIDAS.
     """
     if plan_df is None or plan_df.empty:
         logger.info("apply_beam_load_plan_to_midas: plan_df empty; nothing to send.")
@@ -359,9 +344,6 @@ def apply_beam_load_plan_to_midas(
 
     max_items_per_put = max(int(max_items_per_put), 1)
     df = _normalize_plan_df(plan_df, aggregate_duplicates=aggregate_duplicates)
-
-    if debug and debug.enabled:
-        debug.dump_plan(df, label=debug_label, split_per_case=True)
 
     # -----------------------------
     # 1) Read existing /db/bmld once
@@ -389,7 +371,7 @@ def apply_beam_load_plan_to_midas(
     plan_cases = set(df["load_case"].astype(str).str.strip())
 
     # -----------------------------
-    # 3) Build NEW items (store grouped by element)
+    # 3) Build NEW items (grouped by element)
     # -----------------------------
     new_by_eid: Dict[int, List[BeamLoadItem]] = defaultdict(list)
 
@@ -465,6 +447,9 @@ def apply_beam_load_plan_to_midas(
     req = 0
     idx = 0
 
+    # ✅ Collect exact payloads sent to MIDAS (for ONE final debug JSON)
+    put_payloads_for_debug: list[dict] = []
+
     while idx < len(touched_eids):
         batch: List[int] = []
         batch_items = 0
@@ -494,7 +479,6 @@ def apply_beam_load_plan_to_midas(
         new_count = sum(len(new_by_eid[eid]) for eid in batch)
         sent_preview = sent_new + new_count
 
-        # ✅ Terminal progress line per PUT
         print(
             f"[apply_beam_load_plan_to_midas] PUT #{req} | "
             f"elements={len(batch)} | "
@@ -504,19 +488,24 @@ def apply_beam_load_plan_to_midas(
             flush=True,
         )
 
-        if debug and debug.enabled:
-            batch_specs: List[Tuple[int, BeamLoadItem]] = []
-            for eid in batch:
-                batch_specs.extend((eid, it) for it in new_by_eid[eid])
-            debug.dump_chunk_specs(
-                batch_specs,
-                label=debug_label,
-                chunk_index=req,
-                reason=f"element-batched items<= {max_items_per_put}",
-            )
+        payload = {"Assign": assign}
 
-        resource.put_raw({"Assign": assign})
+        # ✅ store the exact payloads (only if debug enabled)
+        if debug is not None and getattr(debug, "enabled", False):
+            put_payloads_for_debug.append(payload)
+
+        resource.put_raw(payload)
         sent_new += new_count
+
+    # ✅ dump ONE file at the end (if available)
+    if debug is not None and getattr(debug, "enabled", False):
+        dump_fn = getattr(debug, "dump_apply_payload", None)
+        if callable(dump_fn):
+            try:
+                dump_fn(label=debug_label, put_payloads=put_payloads_for_debug)
+            except Exception:
+                # debug must never break apply
+                pass
 
     logger.info(
         "apply_beam_load_plan_to_midas done. Sent %s new items across %s requests.",
@@ -524,6 +513,7 @@ def apply_beam_load_plan_to_midas(
         req,
     )
     return df
+
 
 
 

@@ -6,8 +6,6 @@ import pandas as pd
 
 from core.wind_load.beam_load import apply_beam_load_plan_to_midas
 
-from core.wind_load.debug import summarize_plan
-
 from core.wind_load.wind_common import (
     parse_quadrant_from_load_case_name,
     apply_quadrant_sign_convention,
@@ -121,9 +119,9 @@ def apply_wl_beam_loads_to_group(
         print(f"[apply_wl_beam_loads_to_group] No loads for group {group_name}")
         return
 
-    summarize_plan(combined_plan, label=f"WL_{group_name}", sink=dbg, print_summary=print_summary)
-
+    # ✅ No summarize_plan() (per your request: only final apply JSON)
     apply_beam_load_plan_to_midas(combined_plan, debug=dbg, debug_label=f"WL_{group_name}")
+
 
 
 # ---------------------------------------------------------------------------

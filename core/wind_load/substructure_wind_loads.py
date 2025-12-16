@@ -10,7 +10,6 @@ import pandas as pd
 
 from wind_database import wind_db
 
-from core.wind_load.debug import summarize_plan
 from core.wind_load.beam_load import apply_beam_load_plan_to_midas
 from core.wind_load.groups import get_group_element_ids, build_plans_for_groups
 
@@ -252,8 +251,9 @@ def apply_substructure_wind_loads_to_group(
         print(f"[apply_substructure_wind_loads_to_group] No loads for {group_name}")
         return
 
-    summarize_plan(combined_plan, label=f"WS_SUB_{group_name}", sink=dbg, print_summary=print_summary)
+    # ✅ No summarize_plan() (per your request: only final apply JSON)
     apply_beam_load_plan_to_midas(combined_plan, debug=dbg, debug_label=f"WS_SUB_{group_name}")
+
 
 
 # ---------------------------------------------------------------------------
