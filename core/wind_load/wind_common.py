@@ -93,6 +93,9 @@ def normalize_and_validate_cases_df(
 # Used by WL coeffs + skew coeffs
 # =============================================================================
 
+CONTROL_ANGLES: tuple[int, ...] = (0, 15, 30, 45, 60)
+
+
 def coeffs_by_angle(
     *,
     angles: Sequence[Any],
@@ -102,50 +105,45 @@ def coeffs_by_angle(
     require_unique_angles: bool = True,
 ) -> Dict[int, Tuple[float, float]]:
     """
-    Returns {angle:int -> (T:float, L:float)}
+    Returns {angle:int -> (T:float, L:float)}.
+
+    Designed for Control Data usage where angles are fixed and non-editable:
+    CONTROL_ANGLES = (0, 15, 30, 45, 60)
     """
     if angles is None:
         raise ValueError(f"{table_name}: angles is None")
 
-    if not (len(angles) == len(transverse) == len(longitudinal)):
+    # Fail-fast: control angles must match exactly (catches wrong table/order/wiring).
+    try:
+        angs = tuple(int(a) for a in angles)
+    except (TypeError, ValueError):
+        raise ValueError(f"{table_name}: angles must be integer-like; got {list(angles)!r}")
+
+    if require_unique_angles and angs != CONTROL_ANGLES:
+        raise ValueError(f"{table_name}: angles must be exactly {list(CONTROL_ANGLES)} (got {list(angs)})")
+
+    n = len(CONTROL_ANGLES)
+    if not (len(transverse) == len(longitudinal) == n):
         raise ValueError(
-            f"{table_name}: angles/transverse/longitudinal must have same length "
-            f"(got {len(angles)}, {len(transverse)}, {len(longitudinal)})"
+            f"{table_name}: expected {n} transverse/longitudinal values "
+            f"(got {len(transverse)}, {len(longitudinal)})"
         )
 
-    df = pd.DataFrame({"Angle": list(angles), "T": list(transverse), "L": list(longitudinal)})
-
-    df["Angle"] = pd.to_numeric(df["Angle"], errors="coerce")
-    bad = df["Angle"].isna()
-    if bad.any():
-        raise ValueError(f"{table_name}: non-numeric angle at rows: {df.index[bad].tolist()}")
-
-    non_int = (df["Angle"] % 1 != 0)
-    if non_int.any():
-        raise ValueError(f"{table_name}: non-integer angle at rows: {df.index[non_int].tolist()}")
-
-    df["Angle"] = df["Angle"].astype(int)
-
-    df["T"] = pd.to_numeric(df["T"], errors="coerce")
-    bad_t = df["T"].isna()
-    if bad_t.any():
-        raise ValueError(f"{table_name}: non-numeric transverse at rows: {df.index[bad_t].tolist()}")
-
-    df["L"] = pd.to_numeric(df["L"], errors="coerce")
-    bad_l = df["L"].isna()
-    if bad_l.any():
-        raise ValueError(f"{table_name}: non-numeric longitudinal at rows: {df.index[bad_l].tolist()}")
-
-    if require_unique_angles:
-        dup = df["Angle"].duplicated(keep=False)
-        if dup.any():
-            counts = df.loc[dup, "Angle"].value_counts().sort_index().to_dict()
-            raise ValueError(f"{table_name}: duplicate angles found: {counts}")
+    def _to_float(x: Any, kind: str, i: int) -> float:
+        if isinstance(x, str) and not x.strip():
+            raise ValueError(f"{table_name}: blank {kind} at row {i} (angle={CONTROL_ANGLES[i]})")
+        try:
+            return float(x)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"{table_name}: non-numeric {kind} at row {i} (angle={CONTROL_ANGLES[i]}): {x!r}"
+            )
 
     return {
-        int(a): (float(t), float(l))
-        for a, t, l in zip(df["Angle"].tolist(), df["T"].tolist(), df["L"].tolist())
+        CONTROL_ANGLES[i]: (_to_float(transverse[i], "transverse", i), _to_float(longitudinal[i], "longitudinal", i))
+        for i in range(n)
     }
+
 
 
 # =============================================================================

@@ -1,7 +1,7 @@
 # core/wind_load/wind_pipeline.py
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Iterable, Tuple
+from typing import Any, Callable
 import pandas as pd
 
 from core.wind_load.beam_load import apply_beam_load_plan_to_midas
@@ -10,7 +10,7 @@ from core.wind_load.live_wind_loads import build_wl_beam_load_plans_for_deck_gro
 from core.wind_load.structural_wind_loads import build_structural_wind_plans_for_deck_groups
 from core.wind_load.substructure_wind_loads import build_substructure_wind_plans_for_groups
 
-from core.wind_load.wind_common import normalize_and_validate_cases_df, combine_plans
+from core.wind_load.wind_common import normalize_and_validate_cases_df
 
 
 # ---------------------------------------------------------------------------
