@@ -13,7 +13,7 @@ from midas.resources.structural_group import StructuralGroup
 # ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=1)
-def _get_all_groups_cached() -> dict[str, Any]:
+def _get_all_structural_groups_cached() -> dict[str, Any]:
     """
     One-shot snapshot of /db/GRUP for this Python process.
 
@@ -25,48 +25,50 @@ def _get_all_groups_cached() -> dict[str, Any]:
 
 
 @lru_cache(maxsize=512)
-def get_group_element_ids(group_name: str) -> list[int]:
+def get_structural_group_element_ids(structural_group_name: str) -> list[int]:
     """
     Cached lookup: return element IDs for the given structural group name.
 
-    Uses the in-memory /db/GRUP snapshot from _get_all_groups_cached(),
+    Uses the in-memory /db/GRUP snapshot from _get_all_structural_groups_cached(),
     so we only ever do ONE GET /db/GRUP per Python process.
     """
-    group_name = str(group_name or "").strip()
-    if not group_name:
+    target_group_name = str(structural_group_name or "").strip()
+    if not target_group_name:
         return []
 
-    all_groups = _get_all_groups_cached()
+    structural_group_records = _get_all_structural_groups_cached()
 
-    # Find the group entry with this NAME
-    for entry in all_groups.values():
-        name = (entry.get("NAME") or "").strip()
-        if name != group_name:
+    # Find the group record with matching NAME
+    for structural_group_record in structural_group_records.values():
+        record_group_name = str(structural_group_record.get("NAME") or "").strip()
+        if record_group_name != target_group_name:
             continue
 
-        e_list = entry.get("E_LIST")
-        if not e_list:
+        raw_element_list = structural_group_record.get("E_LIST")
+        if not raw_element_list:
             return []
 
-        # normalize to list[int] (same logic as StructuralGroup._to_int_list)
-        if isinstance(e_list, str):
-            return [int(x) for x in e_list.split() if x.strip().isdigit()]
+        # Normalize to list[int] (same logic as StructuralGroup._to_int_list)
+        if isinstance(raw_element_list, str):
+            # Example: "1 2 3"
+            return [int(token) for token in raw_element_list.split() if token.strip().isdigit()]
 
-        out: list[int] = []
-        for x in e_list:
+        element_ids: list[int] = []
+        for item in raw_element_list:
             try:
-                out.append(int(x))
+                element_ids.append(int(item))
             except (TypeError, ValueError):
                 pass
-        return out
+
+        return element_ids
 
     return []
 
 
 def clear_group_cache() -> None:
     """Optional helper (useful in tests / interactive sessions)."""
-    _get_all_groups_cached.cache_clear()
-    get_group_element_ids.cache_clear()
+    _get_all_structural_groups_cached.cache_clear()
+    get_structural_group_element_ids.cache_clear()
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +128,7 @@ def build_plans_for_groups(
 
 
 __all__ = [
-    "get_group_element_ids",
+    "get_structural_group_element_ids",
     "clear_group_cache",
     "build_plans_for_groups",
 ]

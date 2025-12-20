@@ -14,7 +14,7 @@ from midas import elements, get_section_properties
 from midas.resources.element_beam_load import BeamLoadItem, BeamLoadResource
 
 from core.wind_load.debug import DebugSink
-from core.wind_load.groups import get_group_element_ids
+from core.wind_load.groups import get_structural_group_element_ids
 
 
 logger = logging.getLogger(__name__)
@@ -177,7 +177,7 @@ def resolve_depths_for_group(
 ) -> Dict[int, float]:
     ax = _validate_axis(exposure_axis)
 
-    element_ids = list(get_group_element_ids(group_name))
+    element_ids = list(get_structural_group_element_ids(group_name))
     elem_to_sect = _get_element_to_section_map(element_ids)
 
     section_props_raw = get_section_properties_cached()
@@ -241,7 +241,7 @@ def build_uniform_load_beam_load_plan_for_group(
     eccentricity: float = 0.0,
 ) -> pd.DataFrame:
     if element_ids is None:
-        element_ids = get_group_element_ids(group_name)
+        element_ids = get_structural_group_element_ids(group_name)
 
     rows: list[dict] = []
     for eid in [int(e) for e in element_ids]:

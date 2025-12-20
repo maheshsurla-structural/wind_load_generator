@@ -11,7 +11,7 @@ import pandas as pd
 from wind_database import wind_db
 
 from core.wind_load.beam_load import apply_beam_load_plan_to_midas
-from core.wind_load.groups import get_group_element_ids, build_plans_for_groups
+from core.wind_load.groups import get_structural_group_element_ids, build_plans_for_groups
 
 from core.geometry.midas_element_local_axes import MidasElementLocalAxes
 from core.geometry.element_local_axes import LocalAxes
@@ -42,7 +42,7 @@ def _get_axes_helper() -> MidasElementLocalAxes:
 @lru_cache(maxsize=128)
 def _get_group_local_axes(group_name: str) -> LocalAxes:
     helper = _get_axes_helper()
-    element_ids = get_group_element_ids(group_name)
+    element_ids = get_structural_group_element_ids(group_name)
     if not element_ids:
         raise RuntimeError(f"Group {group_name!r} has no elements in MIDAS.")
     return helper.compute_local_axes_for_element(int(element_ids[0]))

@@ -5,7 +5,7 @@ from typing import Any, Sequence, Dict, Tuple, Mapping
 import re
 import pandas as pd
 
-from core.wind_load.groups import get_group_element_ids
+from core.wind_load.groups import get_structural_group_element_ids
 from core.wind_load.beam_load import (
     build_uniform_load_beam_load_plan_for_group,
     convert_pressure_to_line_loads_by_exposure_depth,
@@ -158,7 +158,7 @@ def resolve_element_ids(group_name: str, element_ids: list[int] | None) -> list[
     Return element_ids (int list). Uses cached group lookup if element_ids is None.
     """
     if element_ids is None:
-        element_ids = get_group_element_ids(group_name)
+        element_ids = get_structural_group_element_ids(group_name)
     return [int(e) for e in element_ids]
 
 

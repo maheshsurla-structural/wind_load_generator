@@ -13,5 +13,5 @@ dependencies = [
 ]
 
 [tool.setuptools]
-packages = ["core", "midas", "gui","unit_manager","utils","wind_database"]
+packages = ["core", "midas", "gui","unit_manager","utils","wind_database", "pretension"]
 
