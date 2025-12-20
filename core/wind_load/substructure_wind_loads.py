@@ -15,12 +15,12 @@ from core.wind_load.groups import get_structural_group_element_ids, build_plans_
 
 from core.geometry.midas_element_local_axes import MidasElementLocalAxes
 from core.geometry.element_local_axes import LocalAxes
+from core.wind_load.groups import get_structural_group_element_ids
 
 from core.wind_load.wind_common import (
     parse_quadrant_from_load_case_name,
     apply_quadrant_sign_convention,
     normalize_and_validate_cases_df,
-    resolve_element_ids,
     build_pressure_plan_from_components,
 )
 
@@ -210,7 +210,12 @@ def build_substructure_wind_beam_load_plan_for_group(
     if components_df is None or components_df.empty:
         return pd.DataFrame()
 
-    eids = resolve_element_ids(group_name, element_ids)
+
+    if element_ids is None:
+        eids = get_structural_group_element_ids(group_name)
+    else:
+        eids = [int(e) for e in element_ids]
+
     if not eids:
         return pd.DataFrame()
 

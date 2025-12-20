@@ -153,14 +153,6 @@ def coeffs_by_angle(
 EPS = 1e-9
 
 
-def resolve_element_ids(group_name: str, element_ids: list[int] | None) -> list[int]:
-    """
-    Return element_ids (int list). Uses cached group lookup if element_ids is None.
-    """
-    if element_ids is None:
-        element_ids = get_structural_group_element_ids(group_name)
-    return [int(e) for e in element_ids]
-
 
 def combine_plans(plans: list[pd.DataFrame]) -> pd.DataFrame:
     """

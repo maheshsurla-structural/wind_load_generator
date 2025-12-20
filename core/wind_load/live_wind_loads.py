@@ -5,13 +5,13 @@ from typing import Sequence, Iterable, Mapping
 import pandas as pd
 
 from core.wind_load.beam_load import apply_beam_load_plan_to_midas
+from core.wind_load.groups import get_structural_group_element_ids
 
 from core.wind_load.wind_common import (
     parse_quadrant_from_load_case_name,
     apply_quadrant_sign_convention,
     normalize_and_validate_cases_df,
     coeffs_by_angle,
-    resolve_element_ids,
     build_line_load_plan_from_components,
 )
 
@@ -89,7 +89,11 @@ def build_wl_beam_load_plan_for_group(
     if components_df is None or components_df.empty:
         return pd.DataFrame()
 
-    eids = resolve_element_ids(group_name, element_ids)
+    if element_ids is None:
+        eids = get_structural_group_element_ids(group_name)
+    else:
+        eids = [int(e) for e in element_ids]
+
     if not eids:
         return pd.DataFrame()
 
