@@ -150,7 +150,7 @@ if __name__ == "__main__":
 # from pretension.apply_ptns_as_nodal import apply_ptns_element_as_nodal
 
 # results = apply_ptns_element_as_nodal(
-#     elem_id=1030,
+#     elem_id=1033,
 #     suffix="_nodal",
 #     mode="append",
 #     use_group_from_ptns=False,  # start safe

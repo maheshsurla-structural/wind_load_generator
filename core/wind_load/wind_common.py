@@ -20,6 +20,11 @@ from core.wind_load.beam_load import compute_section_exposures
 # =============================================================================
 
 _QUADRANT_RE = re.compile(r"(?:_Q|Q)([1-4])\b", re.I)
+def parse_quadrant_from_load_case_name(name: str) -> int:
+    """Parse Q1..Q4 from case name. Defaults to Q1 if missing."""
+    m = _QUADRANT_RE.search(name or "")
+    return int(m.group(1)) if m else 1
+
 
 _QUAD_SIGNS: dict[int, tuple[int, int]] = {
     1: (+1, +1),
@@ -27,13 +32,6 @@ _QUAD_SIGNS: dict[int, tuple[int, int]] = {
     3: (-1, -1),
     4: (-1, +1),
 }
-
-
-def parse_quadrant_from_load_case_name(name: str) -> int:
-    """Parse Q1..Q4 from case name. Defaults to Q1 if missing."""
-    m = _QUADRANT_RE.search(name or "")
-    return int(m.group(1)) if m else 1
-
 
 def apply_quadrant_sign_convention(q: int, t: float, l: float) -> tuple[float, float]:
     """Apply quadrant signs to (t, l)."""
@@ -186,7 +184,7 @@ def build_line_load_plan_from_components(
 
     plans: list[pd.DataFrame] = []
 
-    for _, row in components_df.iterrows():
+    for index, row in components_df.iterrows():
         lc = str(row.get(load_case_col, "")).strip()
         if not lc:
             continue
@@ -223,7 +221,7 @@ def _depth_map_for_axis(
     Resolve depth_by_eid for exposure_y or exposure_z once.
     """
     if not element_ids:
-        return {}
+        return {}  
 
     elem_to_sect = _get_element_to_section_map(element_ids)
     if not elem_to_sect:
@@ -277,7 +275,7 @@ def build_pressure_plan_from_components(
 
     # build the needed depth maps once
     depth_maps: Dict[str, Dict[int, float]] = {}
-    for _, axis in component_map.values():
+    for index, axis in component_map.values():
         axis = str(axis).lower()
         if axis not in depth_maps:
             depth_maps[axis] = _depth_map_for_axis(
@@ -289,7 +287,7 @@ def build_pressure_plan_from_components(
 
     plans: list[pd.DataFrame] = []
 
-    for _, row in components_df.iterrows():
+    for index, row in components_df.iterrows():
         lc = str(row.get(load_case_col, "")).strip()
         if not lc:
             continue

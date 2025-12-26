@@ -44,7 +44,7 @@ def build_wl_case_components_from_control_data(
     )
 
     rows: list[dict] = []
-    for _, row in wl_cases_df.iterrows():
+    for index, row in wl_cases_df.iterrows():
         ang = int(row["Angle"])
         lcname = str(row["Value"])
 
