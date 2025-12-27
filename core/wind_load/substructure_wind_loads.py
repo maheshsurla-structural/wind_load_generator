@@ -10,7 +10,7 @@ import pandas as pd
 
 from wind_database import wind_db
 
-from core.wind_load.beam_load import apply_beam_load_plan_to_midas
+from core.wind_load.beam_load import apply_beam_load_plan_to_midas, build_pressure_plan_from_components
 from core.wind_load.groups import get_structural_group_element_ids, build_plans_for_groups
 
 from core.geometry.midas_element_local_axes import MidasElementLocalAxes
@@ -21,7 +21,6 @@ from core.wind_load.wind_common import (
     parse_quadrant_from_load_case_name,
     apply_quadrant_sign_convention,
     normalize_and_validate_cases_df,
-    build_pressure_plan_from_components,
 )
 
 

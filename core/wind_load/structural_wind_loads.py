@@ -6,7 +6,7 @@ import pandas as pd
 
 from wind_database import wind_db
 
-from core.wind_load.beam_load import apply_beam_load_plan_to_midas
+from core.wind_load.beam_load import apply_beam_load_plan_to_midas, build_pressure_plan_from_components
 from core.wind_load.groups import get_structural_group_element_ids
 
 from core.wind_load.wind_common import (
@@ -14,7 +14,6 @@ from core.wind_load.wind_common import (
     apply_quadrant_sign_convention,
     normalize_and_validate_cases_df,
     coeffs_by_angle,
-    build_pressure_plan_from_components,
 )
 
 from core.wind_load.groups import build_plans_for_groups
