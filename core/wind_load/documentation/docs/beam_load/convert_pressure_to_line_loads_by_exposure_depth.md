@@ -1,21 +1,30 @@
-# `convert_pressure_to_line_loads_by_exposure_depth` — Detailed Notes (Full Explanation)
+# `convert_pressure_to_line_loads_by_exposure_depth` — Detailed Notes (Updated to match current function)
 
 ## Purpose
-This function builds a **beam-load “plan”** (a table) from:
-- a **uniform pressure** (e.g., wind pressure) in **ksf** (kips/ft²), and
-- a per-element **exposure depth** in **ft**
+
+This function builds a **beam-load plan DataFrame** from:
+
+- a **uniform pressure** `pressure` in **ksf** (kips/ft²), and
+- a per-element **exposure depth** map `depth_by_eid` in **ft**
 
 It converts pressure to a **uniform line load** per element in **k/ft** using:
 
-`q (k/ft) = pressure (ksf) * depth (ft)`
+```text
+q (k/ft) = pressure (ksf) * depth (ft)
+```
 
-It returns a **pandas DataFrame** where each row describes the load to apply to one element, plus metadata like load case and direction.
+It returns a **pandas DataFrame** where each row describes the load to apply to one element, plus metadata like:
+- load case
+- load direction
+- load group
+- group name
+- eccentricity
 
 ---
 
-## Function code (reference)
+## Function code (current version)
 
-```python
+```py
 def convert_pressure_to_line_loads_by_exposure_depth(
     *,
     group_name: str,
@@ -24,8 +33,11 @@ def convert_pressure_to_line_loads_by_exposure_depth(
     udl_direction: str,
     depth_by_eid: Dict[int, float],
     load_group_name: str | None = None,
+    eccentricity: float = 0.0,
 ) -> pd.DataFrame:
     rows: list[dict] = []
+    lc = str(load_case_name).strip()
+    lg = str(load_group_name or lc).strip()
 
     for eid, depth in (depth_by_eid or {}).items():
         q = float(pressure) * float(depth)  # ksf * ft = k/ft
@@ -35,10 +47,11 @@ def convert_pressure_to_line_loads_by_exposure_depth(
             {
                 "element_id": int(eid),
                 "line_load": float(q),
-                "load_case": str(load_case_name),
-                "load_direction": str(udl_direction),
-                "load_group": str(load_group_name or load_case_name),
-                "group_name": str(group_name),
+                "load_case": lc,
+                "load_direction": str(udl_direction).strip(),
+                "load_group": lg,
+                "group_name": str(group_name).strip(),
+                "eccentricity": float(eccentricity),
             }
         )
 
@@ -54,117 +67,168 @@ def convert_pressure_to_line_loads_by_exposure_depth(
 ## Parameters (what each input means)
 
 ### Keyword-only arguments (`*`)
-The `*` means you **must** call the function using **named (keyword) arguments**, not positional ones.
+The `*` means you **must** call the function using **keyword arguments**.
 
-Valid call (keyword args):
-```python
+✅ Valid:
+```py
 plan = convert_pressure_to_line_loads_by_exposure_depth(
     group_name="WALL_A",
     load_case_name="WIND+X",
     pressure=0.02,
     udl_direction="GY",
-    depth_by_eid={101: 3.5, 102: 0.0},
+    depth_by_eid={101: 3.5, 102: 2.0},
 )
 ```
 
-Invalid call (positional args) — will error:
-```python
+❌ Invalid (positional):
+```py
 plan = convert_pressure_to_line_loads_by_exposure_depth(
     "WALL_A", "WIND+X", 0.02, "GY", {101: 3.5}
 )
 ```
 
-### `group_name: str`
-A label describing the element group you’re building loads for (used as metadata in the output).
+---
 
-Example: `"WALL_A"`, `"ROOF_EDGE"`, `"FRAME_LINE_1"`
+### `group_name: str`
+Metadata label describing the group these elements belong to (stored in each output row).
+
+Examples: `"GIRDER"`, `"WALL_A"`, `"PIER_LINE_1"`
+
+---
 
 ### `load_case_name: str`
-The load case name to tag each row with.
+The load case name stored in output rows.
 
-Example: `"WIND+X"`, `"WIND-Y"`
+Example: `"WL_Q1"`, `"WIND+X_Q2"`
+
+---
 
 ### `pressure: float`
-Uniform pressure in **ksf**.
+Uniform pressure in **ksf** (kips/ft²).
 
-Example: `0.02` ksf (which equals 20 psf because 1 ksf = 1000 psf)
+Example: `0.02` ksf = 20 psf (since 1 ksf = 1000 psf).
+
+---
 
 ### `udl_direction: str`
-Direction string for the beam line load (metadata field).
+Direction label used by your beam-load system (metadata).
 
-Example: `"GX"`, `"GY"`, `"GZ"` (depends on your convention)
+Examples: `"LX"`, `"LY"`, `"GX"`, `"GY"` (depends on your convention).
+
+---
 
 ### `depth_by_eid: Dict[int, float]`
-Dictionary mapping **element id → exposure depth** (ft).
+Mapping:
+
+```py
+{element_id: exposure_depth_ft}
+```
 
 Example:
-```python
+```py
 {
-  101: 3.5,  # element 101 has 3.5 ft exposure depth
-  102: 2.0,  # element 102 has 2.0 ft exposure depth
-  103: 0.0,  # element 103 has no exposure depth (will be skipped)
+  101: 3.5,  # element 101 has 3.5 ft exposure
+  102: 2.0,
+  103: 0.0,  # will be skipped because q becomes ~0
 }
 ```
 
+---
+
 ### `load_group_name: str | None = None`
-Optional grouping label. If not provided, it defaults to `load_case_name`.
-
-- If `load_group_name="WIND_GROUP_1"` → output column `load_group` = `"WIND_GROUP_1"`
-- If `load_group_name=None` → output column `load_group` = `load_case_name`
-
----
-
-## Outputs (DataFrame columns)
-
-Each row in the returned DataFrame includes:
-
-- `element_id` (int): the beam element id
-- `line_load` (float): computed **k/ft**
-- `load_case` (str): from `load_case_name`
-- `load_direction` (str): from `udl_direction`
-- `load_group` (str): `load_group_name` if provided else `load_case_name`
-- `group_name` (str): from `group_name`
+Optional group label for loads.
+- If provided → used as `load_group`
+- If not provided → defaults to `load_case_name` (after stripping)
 
 ---
 
-## Line-by-line explanation (what each line does)
+### `eccentricity: float = 0.0`
+Stored in each output row (often used as a load offset in the MIDAS beam-load definition).
 
-### 1) Create an empty list to collect rows
-```python
-rows: list[dict] = []
+This function **does not apply** eccentricity physically — it **records** the value for later use by the “apply-to-MIDAS” layer.
+
+---
+
+## Output (DataFrame columns)
+
+Each row represents one element receiving a non-zero line load:
+
+- `element_id` (int)
+- `line_load` (float) — in **k/ft**
+- `load_case` (str)
+- `load_direction` (str)
+- `load_group` (str)
+- `group_name` (str)
+- `eccentricity` (float)
+
+---
+
+## What changed vs the older version (important updates)
+
+1) **Normalization of load case & load group happens once**
+```py
+lc = str(load_case_name).strip()
+lg = str(load_group_name or lc).strip()
 ```
-This list will hold one dictionary per element that gets a non-zero load.
+So the function:
+- strips whitespace from `load_case_name`
+- uses `load_case_name` as the fallback for `load_group_name`
+- strips whitespace from that too
+
+2) **Direction & group name are stripped**
+```py
+"load_direction": str(udl_direction).strip(),
+"group_name": str(group_name).strip(),
+```
+
+3) **`eccentricity` is included in output**
+```py
+"eccentricity": float(eccentricity),
+```
 
 ---
 
-### 2) Loop over the element-depth map safely
-```python
+## Line-by-line explanation (current behavior)
+
+### 1) Prepare row storage and normalize strings
+
+```py
+rows: list[dict] = []
+lc = str(load_case_name).strip()
+lg = str(load_group_name or lc).strip()
+```
+
+- `rows` collects one dict per element.
+- `lc` becomes a clean load case name:
+  - `"  WIND+X "` → `"WIND+X"`
+- `lg` becomes a clean load group name:
+  - if `load_group_name` is `None` → uses `lc`
+  - otherwise uses the provided name
+  - both are `.strip()`-ed
+
+---
+
+### 2) Loop over element depths safely
+
+```py
 for eid, depth in (depth_by_eid or {}).items():
 ```
 
-Why `(depth_by_eid or {})`?
-
-- If `depth_by_eid` is a normal dict → use it
-- If `depth_by_eid` is `None` (or empty) → use `{}` so the loop won’t crash
-
-Examples:
-- `depth_by_eid=None` → becomes `{}` → loop runs 0 times → returns empty DataFrame
-- `depth_by_eid={}` → loop runs 0 times → returns empty DataFrame
+- If `depth_by_eid` is `None`, `(depth_by_eid or {})` becomes `{}` and the loop runs zero times.
+- If it’s an empty dict, loop also runs zero times.
 
 ---
 
-### 3) Compute line load for this element
-```python
+### 3) Compute line load for each element
+
+```py
 q = float(pressure) * float(depth)  # ksf * ft = k/ft
 ```
 
-- Converts `pressure` and `depth` to floats (defensive conversion)
-- Computes the line load
-
 Example:
-- `pressure = 0.02` ksf
-- `depth = 3.5` ft
-- `q = 0.02 * 3.5 = 0.07` k/ft
+- pressure = `0.02` ksf
+- depth = `3.5` ft
+- q = `0.02 * 3.5 = 0.07` k/ft
 
 Unit check:
 - ksf = k/ft²
@@ -172,164 +236,145 @@ Unit check:
 
 ---
 
-### 4) Skip loads that are effectively zero
-```python
+### 4) Skip near-zero loads
+
+```py
 if abs(q) < EPS:
     continue
 ```
 
-- `EPS` is a small tolerance constant (example: `1e-9`)
-- This avoids adding rows for:
-  - exact zeros, or
-  - tiny floating-point noise values
-
-Examples (assume `EPS = 1e-9`):
-- `q = 0.0` → `abs(q) < EPS` → skip
-- `q = 1e-12` → skip
-- `q = 1e-6` → keep
+- `EPS` is a small tolerance (like `1e-9`)
+- avoids adding “noise” rows for tiny floating point values
 
 ---
 
-### 5) Add a row dict for this element
-```python
+### 5) Add one row for this element
+
+```py
 rows.append(
     {
         "element_id": int(eid),
         "line_load": float(q),
-        "load_case": str(load_case_name),
-        "load_direction": str(udl_direction),
-        "load_group": str(load_group_name or load_case_name),
-        "group_name": str(group_name),
+        "load_case": lc,
+        "load_direction": str(udl_direction).strip(),
+        "load_group": lg,
+        "group_name": str(group_name).strip(),
+        "eccentricity": float(eccentricity),
     }
 )
 ```
 
-What each field does:
-
-- `"element_id": int(eid)`
-  - Ensures the element id is an integer
-
-- `"line_load": float(q)`
-  - Ensures the computed line load is a float
-
-- `"load_case": str(load_case_name)`
-  - Ensures load case is stored as a string
-
-- `"load_direction": str(udl_direction)`
-  - Ensures direction is stored as a string
-
-- `"load_group": str(load_group_name or load_case_name)`
-  - If `load_group_name` is provided (truthy), use it
-  - Otherwise use `load_case_name`
-
-  Examples:
-  - `load_group_name="WIND_GRP"` → `"load_group"="WIND_GRP"`
-  - `load_group_name=None` → `"load_group"=load_case_name`
-
-- `"group_name": str(group_name)`
-  - Ensures group name is stored as a string
+This ensures consistent typing:
+- element id always int
+- line load always float
+- strings stripped
+- eccentricity always float
 
 ---
 
-### 6) Convert the row list into a DataFrame
-```python
+### 6) Convert rows to DataFrame, sort, reset index
+
+```py
 df = pd.DataFrame(rows)
-```
-
-If `rows` is empty, `df` is an empty DataFrame with no rows.
-
----
-
-### 7) If not empty: sort and reset index
-```python
 if not df.empty:
     df.sort_values("element_id", inplace=True)
     df.reset_index(drop=True, inplace=True)
-```
-
-- `df.sort_values("element_id", inplace=True)`
-  - Sorts rows in ascending order of `element_id`
-  - `inplace=True` modifies `df` directly
-
-- `df.reset_index(drop=True, inplace=True)`
-  - Replaces the index with 0..N-1
-  - `drop=True` avoids keeping the old index as a column
-
-Why do this?
-- Sorting makes the plan deterministic and easier to read/debug
-- Resetting index gives a clean index after sorting
-
----
-
-### 8) Return the DataFrame
-```python
 return df
 ```
 
+- Sorting makes output deterministic (useful for debugging and stable diffs)
+- resetting index gives clean `0..N-1` row numbers
+
 ---
 
-## Worked Example (complete)
+## Worked examples
+
+### Example 1 — Basic conversion
 
 Inputs:
-```python
+```py
 group_name = "WALL_A"
-load_case_name = "WIND+X"
-pressure = 0.02     # ksf
-udl_direction = "GY"
-depth_by_eid = {
-    101: 3.5,   # ft
-    102: 2.0,   # ft
-    103: 0.0,   # ft -> should be skipped (q=0)
-}
+load_case_name = "  WIND+X  "
+pressure = 0.02  # ksf
+udl_direction = "  GY  "
+depth_by_eid = {101: 3.5, 102: 2.0, 103: 0.0}
 load_group_name = None
+eccentricity = 0.25
 ```
 
-Per-element computations:
-- Element 101: `q = 0.02 * 3.5 = 0.07 k/ft`
-- Element 102: `q = 0.02 * 2.0 = 0.04 k/ft`
-- Element 103: `q = 0.02 * 0.0 = 0.0 k/ft` → skipped
+Per-element:
+- 101: q = 0.02 * 3.5 = 0.07 k/ft
+- 102: q = 0.02 * 2.0 = 0.04 k/ft
+- 103: q = 0.02 * 0.0 = 0.0 → skipped
 
 Output DataFrame (conceptually):
+
 ```text
-   element_id  line_load load_case load_direction load_group group_name
-0         101       0.07   WIND+X            GY     WIND+X     WALL_A
-1         102       0.04   WIND+X            GY     WIND+X     WALL_A
+   element_id  line_load load_case load_direction load_group group_name  eccentricity
+0         101      0.07   WIND+X           GY      WIND+X     WALL_A          0.25
+1         102      0.04   WIND+X           GY      WIND+X     WALL_A          0.25
 ```
 
-Note:
-- `load_group` becomes `"WIND+X"` because `load_group_name` was `None`.
+Notes:
+- `load_case` stored as `"WIND+X"` (stripped)
+- `load_direction` stored as `"GY"` (stripped)
+- `load_group` stored as `"WIND+X"` because `load_group_name` was None
+- `group_name` stored as `"WALL_A"` (stripped)
+- `eccentricity` stored as `0.25`
 
 ---
 
-## Edge cases to be aware of
+### Example 2 — Explicit load group name
 
-### `depth_by_eid` is `None`
-```python
-depth_by_eid = None
+```py
+plan = convert_pressure_to_line_loads_by_exposure_depth(
+    group_name="PIER",
+    load_case_name="WIND-Z",
+    pressure=-0.015,
+    udl_direction="GZ",
+    depth_by_eid={2001: 4.0, 2002: 4.0},
+    load_group_name="WIND_SERVICE",
+    eccentricity=0.0,
+)
 ```
-Result:
-- loop runs 0 times
-- returns empty DataFrame
 
-### All depths are zero
-```python
-depth_by_eid = {101: 0.0, 102: 0.0}
+Per-element:
+- q = -0.015 * 4.0 = -0.06 k/ft
+
+Output will have:
+- `load_group = "WIND_SERVICE"`
+- `line_load = -0.06` for both elements
+
+---
+
+### Example 3 — `depth_by_eid` is None or empty
+
+```py
+convert_pressure_to_line_loads_by_exposure_depth(
+    group_name="G1",
+    load_case_name="W1",
+    pressure=0.02,
+    udl_direction="GY",
+    depth_by_eid=None,   # or {}
+)
 ```
-Result:
-- all computed `q` values are zero
-- all rows skipped due to `EPS`
-- returns empty DataFrame
 
-### Negative pressure or depth
-If `pressure` is negative (suction) or depth is negative (usually not expected), `q` can be negative.
-The code allows it and will include it unless it’s near zero.
+Result: empty DataFrame (no rows).
+
+---
+
+## Edge cases / behavior notes
+
+- If `eid` is not int-like (e.g. `"A12"`), `int(eid)` will raise a `ValueError` when building the row.
+- Negative `pressure` is allowed (common for suction); it produces negative `line_load`.
+- Eccentricity is **recorded**, not applied inside this function.
 
 ---
 
 ## Quick summary
-- Iterates over `depth_by_eid`
-- Computes `line_load = pressure * depth`
-- Skips near-zero loads using `EPS`
-- Builds a DataFrame with consistent typing (int/float/str)
-- Sorts by element id and resets index
-- Returns the plan DataFrame
+
+- Normalize `load_case_name` and `load_group_name` once (`strip()`)
+- Loop `depth_by_eid`
+- Compute `line_load = pressure * depth`
+- Skip near-zero values using `EPS`
+- Create a plan DataFrame with deterministic sorting and an `eccentricity` column

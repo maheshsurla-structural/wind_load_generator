@@ -8,32 +8,38 @@ This helper builds a mapping:
 {element_id: section_id}
 ```
 
-It takes a list of element IDs, looks up each element in the cached MIDAS **/db/ELEM** data (via `_get_all_elements_cached()`), extracts the element’s **section/property id** from the `"SECT"` field, and returns a clean `Dict[int, int]`.
+It takes a list/sequence of element IDs, looks up each element in the cached MIDAS **/db/ELEM** snapshot (via `_get_all_elements_cached()`), extracts the element’s **section/property id** from the `"SECT"` field, and returns a clean `Dict[int, int]`.
+
+This mapping is later used by exposure/pressure conversion logic to answer questions like:
+
+- “For element `101`, which section properties row should I use to get exposure depth?”
 
 ---
 
-## The function
+## The function (as implemented)
 
 ```python
-def _get_element_to_section_map(element_ids: List[int]) -> Dict[int, int]:
-    """
-    Return {element_id: section_id} for each element in element_ids.
-    Uses /db/ELEM via midas.elements.get_all() (cached).
-    """
+def _get_element_to_section_map(element_ids: Sequence[int]) -> Dict[int, int]:
+    """Map element_id -> section_id using cached /db/elem snapshot."""
     out: Dict[int, int] = {}
-    all_elem_data = _get_all_elements_cached()
+    all_elem = _get_all_elements_cached()
 
     for eid in element_ids:
-        edata = all_elem_data.get(str(eid))
+        try:
+            eid_i = int(eid)
+        except (TypeError, ValueError):
+            continue
+
+        edata = all_elem.get(str(eid_i))
         if not edata:
             continue
 
-        sect_id = edata.get("SECT")  # adjust if your key differs
+        sect_id = edata.get("SECT")
         if sect_id is None:
             continue
 
         try:
-            out[int(eid)] = int(sect_id)
+            out[eid_i] = int(sect_id)
         except (TypeError, ValueError):
             continue
 
@@ -44,17 +50,17 @@ def _get_element_to_section_map(element_ids: List[int]) -> Dict[int, int]:
 
 ## What `_get_all_elements_cached()` typically contains
 
-Many MIDAS DB wrappers return element records keyed by **string element ids**, for example:
+Most MIDAS DB wrappers return element records keyed by **string element ids**, for example:
 
 ```python
-all_elem_data = {
+all_elem = {
   "101": {"SECT": 12, "TYPE": "BEAM", "MATL": 1},
   "102": {"SECT": 12, "TYPE": "BEAM", "MATL": 1},
   "200": {"SECT": 7,  "TYPE": "BEAM", "MATL": 2},
 }
 ```
 
-That’s why the code uses `str(eid)` when doing the lookup.
+That’s why the implementation uses `str(eid_i)` when doing lookups.
 
 ---
 
@@ -70,53 +76,70 @@ Creates an empty dictionary that will be filled with `{element_id: section_id}` 
 
 ---
 
-### 2) Get cached element database snapshot
+### 2) Get cached `/db/ELEM` snapshot once
 
 ```python
-all_elem_data = _get_all_elements_cached()
+all_elem = _get_all_elements_cached()
 ```
 
-Fetches the cached result of reading `/db/ELEM` (so the function can do many lookups without repeatedly calling MIDAS).
+Fetches the cached result of reading `/db/ELEM` so the function can do many lookups without repeatedly calling MIDAS.
 
 ---
 
-### 3) Loop over the requested element ids
+### 3) Loop over requested element IDs
 
 ```python
 for eid in element_ids:
 ```
 
-Processes each element one by one.
+Processes each element ID one by one.
 
 ---
 
-### 4) Look up element data using `str(eid)`
+### 4) Normalize element id to an integer (`eid_i`)
 
 ```python
-edata = all_elem_data.get(str(eid))
+try:
+    eid_i = int(eid)
+except (TypeError, ValueError):
+    continue
 ```
 
-- MIDAS element records are often keyed by **strings**, e.g. `"101"`, not `101`.
-- So `str(eid)` makes the lookup consistent.
+Why this exists:
 
-**Example:**
-- If `eid = 101`, then `str(eid) == "101"`.
-- `all_elem_data.get("101")` returns `{"SECT": 12, ...}`.
+- `element_ids` might contain values like `"101"`, `101`, `np.int64(101)`, etc.
+- Converting to `int` makes the rest of the function consistent.
+- If conversion fails (e.g., `"A1"`, `None`), the element is skipped (robust behavior).
+
+**Examples:**
+
+```python
+int("101")      # 101
+int(101.0)      # 101
+int(None)       # TypeError -> skipped
+int("A1")       # ValueError -> skipped
+```
 
 ---
 
-### 5) Skip if the element record is missing/empty
+### 5) Look up element record in cached dict
 
 ```python
+edata = all_elem.get(str(eid_i))
 if not edata:
     continue
 ```
 
-This handles cases where:
-- The element id isn’t present in `/db/ELEM` (invalid id, deleted, not loaded, etc.)
-- The record exists but is empty/falsey.
+Why `str(eid_i)`?
 
-`continue` means “skip this element and move to the next”.
+- MIDAS snapshots often store keys as strings: `"101"`, not `101`.
+
+So:
+- `eid_i = 101`
+- `str(eid_i) = "101"`
+- `all_elem.get("101")` returns the element record if present.
+
+If the element record is missing or empty → skip.
 
 ---
 
@@ -124,44 +147,38 @@ This handles cases where:
 
 ```python
 sect_id = edata.get("SECT")
-```
-
-- `"SECT"` is expected to be the section/property id used by that element.
-- If your MIDAS export/db uses a different key, you’d adjust it here.
-
----
-
-### 7) Skip if `"SECT"` is missing
-
-```python
 if sect_id is None:
     continue
 ```
 
-This ensures you only include entries that *actually have* a valid section id value.
+- `"SECT"` is expected to be the element’s section/property id.
+- If `"SECT"` is missing or explicitly `None`, skip the element (no valid section link).
 
 ---
 
-### 8) Convert both ids to `int` safely and store
+### 7) Convert section id to int and store in output mapping
 
 ```python
 try:
-    out[int(eid)] = int(sect_id)
+    out[eid_i] = int(sect_id)
 except (TypeError, ValueError):
     continue
 ```
 
-Why this block exists:
+Why this exists:
 
-- Sometimes `sect_id` may come back as a string `"12"` → valid.
-- Sometimes it may come back as something invalid like `""`, `"N/A"`, or a non-numeric type.
-- If conversion fails, we skip that element rather than crashing.
+- `sect_id` might be `"12"` (string) or `12` (int) — both valid.
+- It might also be invalid (e.g., `""`, `"N/A"`, `None`) — conversion would fail.
+- If conversion fails, skip that element rather than crashing.
 
-This also guarantees the returned dict uses integer keys/values.
+This guarantees the output mapping is:
+
+- keys: `int` element ids
+- values: `int` section ids
 
 ---
 
-### 9) Return the mapping
+### 8) Return the mapping
 
 ```python
 return out
@@ -180,9 +197,9 @@ At the end you get a clean `{element_id: section_id}` mapping for all valid inpu
 element_ids = [101, 102, 200]
 ```
 
-**Cached /db/ELEM snapshot:**
+**Cached `/db/ELEM` snapshot:**
 ```python
-all_elem_data = {
+all_elem = {
   "101": {"SECT": 12},
   "102": {"SECT": 12},
   "200": {"SECT": 7},
@@ -196,7 +213,7 @@ all_elem_data = {
 
 ---
 
-### Example 2 — Element id not found in /db/ELEM
+### Example 2 — Element id not found in `/db/ELEM`
 
 **Input:**
 ```python
@@ -205,11 +222,11 @@ element_ids = [101, 999]
 
 **Cached data:**
 ```python
-all_elem_data = {"101": {"SECT": 12}}
+all_elem = {"101": {"SECT": 12}}
 ```
 
-- `eid=101` → found → included
-- `eid=999` → not found → `edata=None` → skipped
+- `101` → found → included
+- `999` → missing → `edata=None` → skipped
 
 **Output:**
 ```python
@@ -227,7 +244,7 @@ element_ids = [101, 102]
 
 **Cached data:**
 ```python
-all_elem_data = {
+all_elem = {
   "101": {"SECT": 12},
   "102": {"TYPE": "BEAM"}  # no SECT field
 }
@@ -243,7 +260,7 @@ all_elem_data = {
 
 ---
 
-### Example 4 — `"SECT"` is not convertible to int
+### Example 4 — `"SECT"` not convertible to int
 
 **Input:**
 ```python
@@ -252,7 +269,7 @@ element_ids = [101, 102]
 
 **Cached data:**
 ```python
-all_elem_data = {
+all_elem = {
   "101": {"SECT": "12"},
   "102": {"SECT": "N/A"},
 }
@@ -270,6 +287,9 @@ all_elem_data = {
 
 ## Notes / gotchas
 
-- **Key type mismatch is common**: MIDAS DB dictionaries often use string keys for ids. Using `str(eid)` avoids missing lookups.
-- This function **silently skips** invalid/missing records rather than raising errors. That’s useful for robustness but can hide data issues; if needed, log skipped ids for debugging.
-- The comment `# adjust if your key differs` is important: if your element record uses a different field name than `"SECT"`, update it.
+- **String keys are common** in MIDAS DB dictionaries (`"101"` vs `101`), so using `str(eid_i)` is important for correct lookups.
+- This function **silently skips** invalid/missing records rather than raising errors. That improves robustness but can hide data issues; logging skipped IDs may be helpful when debugging.
+- If your MIDAS element record uses a different key than `"SECT"` for section id, you would need to change the field name in:
+  ```python
+  sect_id = edata.get("SECT")
+  ```

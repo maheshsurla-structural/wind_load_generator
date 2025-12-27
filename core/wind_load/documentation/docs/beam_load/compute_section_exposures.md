@@ -1,33 +1,39 @@
-# `compute_section_exposures` — Detailed Notes (Full Explanation)
+# `compute_section_exposures` — Detailed Notes (Updated to match current function)
 
 ## Purpose
-This function computes **local exposure depths** for each **section property** (MIDAS “SECT” style row data).
 
-It assumes each section property row contains offsets at fixed column indices:
+`compute_section_exposures` computes **local exposure depths** for each MIDAS section property record (i.e., section IDs used by elements).
 
-- `COL_ID` (property id)
-- `COL_LEFT`, `COL_RIGHT`  → used to compute **exposure_z**
-- `COL_TOP`, `COL_BOTTOM`  → used to compute **exposure_y**
-- plus an optional **extra exposure in Y** (default or per-property override)
+It assumes each row in `section_properties` follows a MIDAS “section properties” layout where key offsets are stored at fixed indices:
+
+- `COL_ID = 1` → **property/section id** (used as index)
+- `COL_LEFT = 11`, `COL_RIGHT = 12` → used to compute **exposure_z**
+- `COL_TOP = 13`, `COL_BOTTOM = 14` → used to compute **exposure_y**
+- plus an optional **extra exposure in Y**:
+  - a default extra (`extra_exposure_y_default`)
+  - and optional per-section overrides (`extra_exposure_y_by_id`)
 
 ### Output options
-- If `as_dataframe=True` (default): returns a **DataFrame** indexed by `property_id` with columns:
+
+- `as_dataframe=True` (default) → returns a **DataFrame** indexed by `property_id` with columns:
   - `exposure_y`
   - `exposure_z`
-- If `as_dataframe=False`: returns a **dict**:
+
+- `as_dataframe=False` → returns a **dict**:
   - `{property_id: (exposure_y, exposure_z)}`
 
 ---
 
-## Function code (reference)
+## The function (current version)
 
-```python
+```py
 def compute_section_exposures(
-    section_properties,
+    section_properties: Iterable,
+    *,
     extra_exposure_y_default: float = 0.0,
-    extra_exposure_y_by_id: dict | None = None,
+    extra_exposure_y_by_id: Optional[Dict[int, float]] = None,
     as_dataframe: bool = True,
-) -> pd.DataFrame | dict:
+) -> pd.DataFrame | Dict[Any, Tuple[float, float]]:
     """
     Compute local exposure depths for all section properties.
 
@@ -71,7 +77,7 @@ def compute_section_exposures(
 
     if extra_exposure_y_by_id:
         extra_y = np.fromiter(
-            (extra_exposure_y_by_id.get(pid, extra_exposure_y_default) for pid in pids_arr),
+            (extra_exposure_y_by_id.get(int(pid), extra_exposure_y_default) for pid in pids_arr),
             dtype=float,
             count=pids_arr.size,
         )
@@ -84,6 +90,11 @@ def compute_section_exposures(
     if as_dataframe:
         df = pd.DataFrame({"exposure_y": exposure_y, "exposure_z": exposure_z}, index=pids_arr)
         df.index.name = "property_id"
+        # Normalize index for reliable .loc lookups where sect_id is int
+        try:
+            df.index = df.index.astype(int)
+        except Exception:
+            pass
         return df
 
     return {pids_arr[i]: (float(exposure_y[i]), float(exposure_z[i])) for i in range(pids_arr.size)}
@@ -93,138 +104,112 @@ def compute_section_exposures(
 
 ## Inputs (parameters)
 
-### `section_properties`
-A sequence of “rows” (usually lists) representing MIDAS section property data.  
-Each row must have at least up to index `COL_BOTTOM` (14), because we read:
+### `section_properties: Iterable`
+An iterable of “rows” (typically lists/tuples) from MIDAS section-property data.
 
-- `row[1]`  → property id
-- `row[11]` → left offset
-- `row[12]` → right offset
-- `row[13]` → top offset
-- `row[14]` → bottom offset
+Each row must be long enough to read indices up to `14` and contain numeric values at:
 
-> Important: These are **hard-coded positions** that match your assumed MIDAS layout.
+- `row[11]`, `row[12]`, `row[13]`, `row[14]`
 
 ### `extra_exposure_y_default: float = 0.0`
-A constant extra Y exposure added to **every** property unless overridden by `extra_exposure_y_by_id`.
+Adds a constant extra exposure to **every** section’s **Y exposure** unless overridden by `extra_exposure_y_by_id`.
 
-### `extra_exposure_y_by_id: dict | None = None`
-Optional overrides: `{property_id: extra_y}`.  
-If provided, each property id can get a custom extra exposure in Y.
+### `extra_exposure_y_by_id: Optional[Dict[int, float]] = None`
+Overrides of extra Y exposure **per property id**.
+
+Important detail in the current function:
+- it does `int(pid)` when reading this dict:
+
+```py
+extra_exposure_y_by_id.get(int(pid), extra_exposure_y_default)
+```
+
+So your override keys should be **integers**, and `pid` must be int-like for overrides to work.
 
 ### `as_dataframe: bool = True`
-Controls output format:
-- `True` → DataFrame
-- `False` → dict
+- `True` → DataFrame output
+- `False` → dict output
 
 ---
 
-## High-level computation (what it calculates)
+## What it computes
 
-For each property id (`pid`), compute:
+For each section/property id (`pid`):
 
 ### Exposure in Y
+
 ```text
 exposure_y = top + bottom + extra_y
 ```
 
 ### Exposure in Z
+
 ```text
 exposure_z = left + right
 ```
 
-Where:
-- `extra_y` is either:
-  - `extra_exposure_y_by_id.get(pid, extra_exposure_y_default)` (per-id override), or
+Where `extra_y` is:
+
+- if overrides provided:
+  - `extra_exposure_y_by_id.get(int(pid), extra_exposure_y_default)`
+- else:
   - `extra_exposure_y_default` for all
 
 ---
 
-## Line-by-line explanation
+## Step-by-step explanation (current behavior)
 
-### 1) Column index definitions
-```python
+### 1) Define the “column indices” (hard-coded MIDAS layout)
+
+```py
 COL_ID, COL_LEFT, COL_RIGHT, COL_TOP, COL_BOTTOM = 1, 11, 12, 13, 14
 ```
 
-This tells the function where to find required fields in each `row` list.
-
-Example row conceptually:
-- `row[1]` = property id
-- `row[11]` = left
-- `row[12]` = right
-- `row[13]` = top
-- `row[14]` = bottom
+This is the contract: your MIDAS section row must match these positions.
 
 ---
 
-### 2) Create lists to collect parsed values
-```python
-pids: list[Any] = []
-left: list[float] = []
-right: list[float] = []
-top: list[float] = []
-bottom: list[float] = []
-```
+### 2) Parse rows into parallel lists
 
-These are “parallel arrays” (all same length), one entry per valid section property row.
-
----
-
-### 3) Iterate over the section property rows safely
-```python
+```py
 for row in section_properties or []:
-```
-
-If `section_properties` is `None`, `(section_properties or [])` becomes `[]`, so the loop does not crash.
-
----
-
-### 4) Validate the row shape before indexing
-```python
-if not row or len(row) <= COL_BOTTOM:
-    continue
-```
-
-- If `row` is empty/None → skip
-- If row does not have index 14 (COL_BOTTOM) → skip
-  - because trying to access `row[14]` would cause an IndexError
-
----
-
-### 5) Parse values with robust casting
-```python
-try:
-    pid = row[COL_ID]
-    pids.append(pid)
-    left.append(float(row[COL_LEFT]))
-    right.append(float(row[COL_RIGHT]))
-    top.append(float(row[COL_TOP]))
-    bottom.append(float(row[COL_BOTTOM]))
-except (TypeError, ValueError):
-    continue
+    if not row or len(row) <= COL_BOTTOM:
+        continue
+    try:
+        pid = row[COL_ID]
+        pids.append(pid)
+        left.append(float(row[COL_LEFT]))
+        right.append(float(row[COL_RIGHT]))
+        top.append(float(row[COL_TOP]))
+        bottom.append(float(row[COL_BOTTOM]))
+    except (TypeError, ValueError):
+        continue
 ```
 
 What this does:
-- Reads `pid` (no float cast, kept as-is)
-- Converts left/right/top/bottom to float and appends
 
-If any value can’t be converted to float (e.g., `"N/A"`), it skips the entire row.
+- `section_properties or []` prevents errors if `section_properties` is `None`.
+- Skips rows that are:
+  - missing
+  - too short (cannot access index 14)
+  - contain non-numeric offset values (cannot convert to float)
+
+Only valid rows contribute to the exposure results.
 
 ---
 
-### 6) If nothing valid was parsed, return an empty structure
-```python
+### 3) If nothing valid was parsed, return empty output
+
+```py
 if not pids:
     return pd.DataFrame(columns=["exposure_y", "exposure_z"]) if as_dataframe else {}
 ```
 
-- If all rows were invalid / missing data → return empty DataFrame or empty dict.
-
 ---
 
-### 7) Convert lists to NumPy arrays (vectorized computation)
-```python
+### 4) Convert lists to NumPy arrays for vectorized math
+
+```py
 pids_arr = np.asarray(pids, dtype=object)
 left_arr = np.asarray(left, dtype=float)
 right_arr = np.asarray(right, dtype=float)
@@ -232,133 +217,122 @@ top_arr = np.asarray(top, dtype=float)
 bottom_arr = np.asarray(bottom, dtype=float)
 ```
 
-Why convert to arrays?
-- Enables fast, clean vectorized operations like:
-  - `top_arr + bottom_arr + extra_y`
-
-Also note:
-- `pids_arr` uses `dtype=object` so property IDs can be ints/strings safely.
+- `pids_arr` is `dtype=object` to allow mixed ID types safely.
+- numeric arrays are `float` for fast computation.
 
 ---
 
-### 8) Build the `extra_y` array (per-id overrides OR constant default)
-```python
-if extra_exposure_y_by_id:
-    extra_y = np.fromiter(
-        (extra_exposure_y_by_id.get(pid, extra_exposure_y_default) for pid in pids_arr),
-        dtype=float,
-        count=pids_arr.size,
-    )
-else:
-    extra_y = np.full(pids_arr.size, extra_exposure_y_default, dtype=float)
+### 5) Build `extra_y` (override-aware)
+
+#### A) Overrides provided
+
+```py
+extra_y = np.fromiter(
+    (extra_exposure_y_by_id.get(int(pid), extra_exposure_y_default) for pid in pids_arr),
+    dtype=float,
+    count=pids_arr.size,
+)
 ```
 
-#### Case A: overrides provided (`extra_exposure_y_by_id` is truthy)
-- For each `pid`, use:
-  - `extra_exposure_y_by_id.get(pid, extra_exposure_y_default)`
-- So each property id can have different extra Y exposure.
+Notes:
+- each `pid` is converted with `int(pid)` before lookup
+- if `pid` cannot be converted to int, this generator will raise (so practically `pid` should be int-like)
 
-`np.fromiter(...)` builds a NumPy array efficiently from a generator.
+#### B) No overrides provided
 
-#### Case B: no overrides
-- Uses `np.full(...)` to make an array like:
-  - `[extra_exposure_y_default, extra_exposure_y_default, ...]`
+```py
+extra_y = np.full(pids_arr.size, extra_exposure_y_default, dtype=float)
+```
 
 ---
 
-### 9) Compute exposures (vectorized)
-```python
+### 6) Compute exposures (vectorized)
+
+```py
 exposure_y = top_arr + bottom_arr + extra_y
 exposure_z = left_arr + right_arr
 ```
 
-This computes all properties at once (array math).
-
 ---
 
-### 10) If requested, return as DataFrame
-```python
-if as_dataframe:
-    df = pd.DataFrame({"exposure_y": exposure_y, "exposure_z": exposure_z}, index=pids_arr)
-    df.index.name = "property_id"
-    return df
+### 7) DataFrame output (default)
+
+```py
+df = pd.DataFrame({"exposure_y": exposure_y, "exposure_z": exposure_z}, index=pids_arr)
+df.index.name = "property_id"
+try:
+    df.index = df.index.astype(int)
+except Exception:
+    pass
+return df
 ```
 
-- Creates a DataFrame with two columns:
-  - `exposure_y`
-  - `exposure_z`
-- Index is the property IDs (`pids_arr`)
-- Names the index `"property_id"` (helps readability/debugging)
+Important “updated” detail:
+- it tries to convert index to `int`, so later code can do:
+
+```py
+exposures_df.loc[sect_id, "exposure_y"]
+```
+
+where `sect_id` is an integer.
+
+If conversion fails (e.g., IDs are non-numeric strings), it silently keeps the original index type.
 
 ---
 
-### 11) Otherwise return as dict
-```python
+### 8) Dict output (if `as_dataframe=False`)
+
+```py
 return {pids_arr[i]: (float(exposure_y[i]), float(exposure_z[i])) for i in range(pids_arr.size)}
 ```
 
-Builds a dict like:
-```python
-{
-  pid1: (exposure_y1, exposure_z1),
-  pid2: (exposure_y2, exposure_z2),
-  ...
-}
-```
-
-`float(...)` ensures values are plain Python floats (not NumPy float types).
+Values are forced to Python floats (not NumPy scalars).
 
 ---
 
-## Worked example (with sample input rows)
+## Worked examples (realistic + detailed)
 
-### Sample `section_properties`
-Below, each row is a list where we only care about indices:
-- 1, 11, 12, 13, 14
+### Helper: create “MIDAS-like” rows
 
-```python
+The function expects rows long enough to include index 14.
+A quick way to build rows for examples:
+
+```py
+def mk_row(pid, left, right, top, bottom):
+    r = [None] * 15
+    r[1] = pid
+    r[11] = left
+    r[12] = right
+    r[13] = top
+    r[14] = bottom
+    return r
+```
+
+---
+
+### Example 1 — basic computation (no overrides)
+
+```py
 section_properties = [
-    # indices:    0    1     ...  11    12    13    14
-    ["x",       10,   "...", 1.0,  1.5,  2.0,  0.5],  # <-- not enough length (example of invalid)
+    mk_row(101, left=1.2, right=0.8, top=2.0, bottom=1.0),
+    mk_row(102, left=1.0, right=1.0, top=1.5, bottom=1.5),
 ]
+
+df = compute_section_exposures(section_properties, as_dataframe=True)
 ```
 
-A realistic shaped row must be long enough to include index 14. Example:
+Per property:
 
-```python
-rowA = [None] * 15
-rowA[1]  = 101     # pid
-rowA[11] = 1.2     # left
-rowA[12] = 0.8     # right
-rowA[13] = 2.0     # top
-rowA[14] = 1.0     # bottom
+- `pid=101`
+  - exposure_y = 2.0 + 1.0 + 0.0 = 3.0
+  - exposure_z = 1.2 + 0.8 = 2.0
 
-rowB = [None] * 15
-rowB[1]  = 102
-rowB[11] = 1.0
-rowB[12] = 1.0
-rowB[13] = 1.5
-rowB[14] = 1.5
-
-section_properties = [rowA, rowB]
-```
-
-### Example 1: No overrides, default extra Y = 0.0
-Inputs:
-```python
-extra_exposure_y_default = 0.0
-extra_exposure_y_by_id = None
-```
-
-Calculations:
-- For pid 101:
-  - exposure_y = top + bottom + extra = 2.0 + 1.0 + 0.0 = 3.0
-  - exposure_z = left + right = 1.2 + 0.8 = 2.0
-- For pid 102:
+- `pid=102`
   - exposure_y = 1.5 + 1.5 + 0.0 = 3.0
   - exposure_z = 1.0 + 1.0 = 2.0
 
-DataFrame result:
+Result:
+
 ```text
              exposure_y  exposure_z
 property_id
@@ -368,56 +342,98 @@ property_id
 
 ---
 
-### Example 2: Overrides provided
-Inputs:
-```python
-extra_exposure_y_default = 0.2
-extra_exposure_y_by_id = {101: 0.5}  # override for pid 101 only
+### Example 2 — default extra exposure applied to all sections
+
+```py
+df = compute_section_exposures(
+    section_properties,
+    extra_exposure_y_default=0.25,
+    as_dataframe=True,
+)
 ```
 
-Now:
-- For pid 101:
-  - extra_y = 0.5 (override)
-  - exposure_y = 2.0 + 1.0 + 0.5 = 3.5
-- For pid 102:
-  - extra_y = 0.2 (default, because no override)
-  - exposure_y = 1.5 + 1.5 + 0.2 = 3.2
+- pid=101: exposure_y = 2.0 + 1.0 + 0.25 = 3.25
+- pid=102: exposure_y = 1.5 + 1.5 + 0.25 = 3.25
 
 exposure_z unchanged.
 
-DataFrame result:
-```text
-             exposure_y  exposure_z
-property_id
-101                 3.5         2.0
-102                 3.2         2.0
+---
+
+### Example 3 — per-section overrides
+
+```py
+df = compute_section_exposures(
+    section_properties,
+    extra_exposure_y_default=0.2,
+    extra_exposure_y_by_id={101: 0.5},  # override only for 101
+    as_dataframe=True,
+)
+```
+
+Important: keys are ints and lookup uses `int(pid)`.
+
+- pid=101:
+  - extra_y = 0.5 (override)
+  - exposure_y = 2.0 + 1.0 + 0.5 = 3.5
+- pid=102:
+  - extra_y = 0.2 (default)
+  - exposure_y = 1.5 + 1.5 + 0.2 = 3.2
+
+---
+
+### Example 4 — dict output
+
+```py
+out = compute_section_exposures(section_properties, as_dataframe=False)
+```
+
+Output:
+
+```py
+{
+  101: (3.0, 2.0),
+  102: (3.0, 2.0),
+}
 ```
 
 ---
 
-## Edge cases / behavior notes
+### Example 5 — row skipped due to bad data
 
-### If `section_properties` is `None` or empty
-- Loop runs zero times
-- Returns empty DataFrame (or empty dict)
+```py
+section_properties = [
+    mk_row(101, 1.0, 1.0, 2.0, 1.0),
+    mk_row(102, "N/A", 1.0, 2.0, 1.0),  # left is not float-convertible
+]
+```
 
-### If some rows are malformed
-Rows are skipped when:
-- row is empty/None
-- row is too short to access index 14
-- left/right/top/bottom cannot be converted to float
+Row for 102 is skipped due to `ValueError` inside `float("N/A")`.
 
-### Property IDs can be non-integer
-Because `pid = row[COL_ID]` is kept as-is and stored in an object array,
-it can be `101`, `"S101"`, etc.  
-(Overrides dict keys must match the exact pid type/value.)
+Output contains only pid 101.
+
+---
+
+## Edge cases / updated behavior notes
+
+- **Rows too short** (no index 14) are skipped.
+- **Non-numeric offsets** cause that entire row to be skipped.
+- **Overrides dict uses `int(pid)`**:
+  - if `pid` is `"101"` it still works (int("101") = 101)
+  - if `pid` is `"S101"` it will fail if overrides are enabled (int("S101") raises)
+- DataFrame output tries to cast the **index to int** for reliable `.loc[sect_id]` usage.
+  - if the cast fails, it silently keeps the original index.
 
 ---
 
 ## Quick summary
-- Reads section offsets (left/right/top/bottom) from fixed column indices
-- Optionally adds extra Y exposure (default or per property override)
+
+- Extracts section offsets from fixed indices (MIDAS layout).
 - Computes:
   - `exposure_y = top + bottom + extra_y`
   - `exposure_z = left + right`
-- Returns results as DataFrame (default) or dict
+- Supports:
+  - global Y extras (`extra_exposure_y_default`)
+  - per-property Y extras (`extra_exposure_y_by_id`, keyed by int section IDs)
+- Returns:
+  - DataFrame (default) with an int index when possible
+  - or a dict mapping `{property_id: (exposure_y, exposure_z)}`
